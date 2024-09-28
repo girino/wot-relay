@@ -260,16 +260,18 @@ func getEnv(key string) string {
 }
 
 func updateTrustNetworkFilter() {
-	trustNetworkMap = make(map[string]bool)
+	myTrustNetworkMap := make(map[string]bool)
 
 	log.Println("🌐 updating trust network map")
 	for pubkey, count := range pubkeyFollowerCount {
 		if count >= config.MinimumFollowers {
-			trustNetworkMap[pubkey] = true
+			myTrustNetworkMap[pubkey] = true
 			appendPubkey(pubkey)
 		}
 	}
 
+	// avoid concurrent map read/write
+	trustNetworkMap = myTrustNetworkMap
 	log.Println("🌐 trust network map updated with", len(trustNetwork), "keys")
 }
 
