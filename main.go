@@ -183,7 +183,7 @@ func monitorResources() {
 			m.Alloc/1024/1024,
 			m.Sys/1024/1024,
 			m.NumGC)
-		log.Println("🫂 network size:", len(pubkeyFollowerCount))
+		log.Println("🫂 network size:", len(trustNetworkMap))
 		time.Sleep(30 * time.Second)
 	}
 }
