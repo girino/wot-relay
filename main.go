@@ -299,13 +299,13 @@ func refreshProfiles(ctx context.Context) {
 
 func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 
-	runTrustNetworkRefresh := func() {
+	runTrustNetworkRefresh := func(wotDepth int) {
 		newPubkeyFollowerCount := make(map[string]int)
 		lastPubkeyFollowerCount := make(map[string]int)
 		newPubkeyFollowerCount[config.RelayPubkey]++
 
 		log.Println("🌐 building web of trust graph")
-		for j := 0; j < config.WoTDepth; j++ {
+		for j := 0; j < wotDepth; j++ {
 			log.Println("🌐 WoT depth", j)
 			oneHopNetwork := make([]string, 0)
 			for pubkey := range newPubkeyFollowerCount {
@@ -358,8 +358,14 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 		log.Println("🔗 relays discovered:", len(relays))
 	}
 
+	// build partial trust network if woTDepth is > 2
+	if config.WoTDepth > 2 {
+		runTrustNetworkRefresh(2)
+		updateTrustNetworkFilter()
+	}
+
 	for {
-		runTrustNetworkRefresh()
+		runTrustNetworkRefresh(config.WoTDepth)
 		updateTrustNetworkFilter()
 		deleteOldNotes(relay)
 		archiveTrustedNotes(ctx, relay)
