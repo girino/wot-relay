@@ -333,7 +333,7 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 				}}
 
 				func() { // avoid "too many concurrent reqs" error
-					timeout, cancel := context.WithTimeout(ctx, 30*time.Second)
+					timeout, cancel := context.WithTimeout(ctx, 5*time.Second)
 					defer cancel()
 					for ev := range pool.SubManyEose(timeout, seedRelays, filters) {
 						for _, contact := range ev.Event.Tags.GetAll([]string{"p"}) {
