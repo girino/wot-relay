@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -38,6 +39,7 @@ type Config struct {
 	RelayIcon        string
 	MaxAgeDays       int
 	ArchiveReactions bool
+	WoTDepth         int
 }
 
 var pool *nostr.SimplePool
@@ -47,7 +49,6 @@ var config Config
 var trustNetwork []string
 var seedRelays []string
 var booted bool
-var oneHopNetwork []string
 var trustNetworkMap map[string]bool
 var pubkeyFollowerCount = make(map[string]int)
 var trustedNotes uint64
@@ -164,10 +165,26 @@ func main() {
 		}
 	})
 
+	go monitorResources()
+
 	log.Println("🎉 relay running on port :3334")
 	err := http.ListenAndServe(":3334", relay)
 	if err != nil {
 		log.Fatal(err)
+	}
+}
+
+func monitorResources() {
+	var m runtime.MemStats
+	for {
+		log.Printf("Number of Goroutines: %d", runtime.NumGoroutine())
+		runtime.ReadMemStats(&m)
+		log.Printf("Alloc = %v MiB, Sys = %v MiB, NumGC = %v",
+			m.Alloc/1024/1024,
+			m.Sys/1024/1024,
+			m.NumGC)
+		log.Println("🫂 network size:", len(pubkeyFollowerCount))
+		time.Sleep(30 * time.Second)
 	}
 }
 
@@ -205,8 +222,13 @@ func LoadConfig() Config {
 		os.Setenv("ARCHIVE_REACTIONS", "FALSE")
 	}
 
+	if os.Getenv("WOT_DEPTH") == "" {
+		os.Setenv("WOT_DEPTH", "2")
+	}
+
 	minimumFollowers, _ := strconv.Atoi(os.Getenv("MINIMUM_FOLLOWERS"))
 	maxAgeDays, _ := strconv.Atoi(os.Getenv("MAX_AGE_DAYS"))
+	woTDepth, _ := strconv.Atoi(os.Getenv("WOT_DEPTH"))
 
 	config := Config{
 		RelayName:        getEnv("RELAY_NAME"),
@@ -223,6 +245,7 @@ func LoadConfig() Config {
 		ArchivalSync:     getEnv("ARCHIVAL_SYNC") == "TRUE",
 		MaxAgeDays:       maxAgeDays,
 		ArchiveReactions: getEnv("ARCHIVE_REACTIONS") == "TRUE",
+		WoTDepth:         woTDepth,
 	}
 
 	return config
@@ -275,53 +298,60 @@ func refreshProfiles(ctx context.Context) {
 func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 
 	runTrustNetworkRefresh := func() {
-		timeoutCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		defer cancel()
-
-		filters := []nostr.Filter{{
-			Authors: []string{config.RelayPubkey},
-			Kinds:   []int{nostr.KindContactList},
-		}}
-
-		log.Println("🔍 fetching owner's follows")
-		for ev := range pool.SubManyEose(timeoutCtx, seedRelays, filters) {
-			for _, contact := range ev.Event.Tags.GetAll([]string{"p"}) {
-				pubkeyFollowerCount[contact[1]]++ // Increment follower count for the pubkey
-				appendOneHopNetwork(contact[1])
-			}
-		}
+		newPubkeyFollowerCount := make(map[string]int)
+		lastPubkeyFollowerCount := make(map[string]int)
+		newPubkeyFollowerCount[config.RelayPubkey]++
 
 		log.Println("🌐 building web of trust graph")
-		for i := 0; i < len(oneHopNetwork); i += 100 {
-			timeout, cancel := context.WithTimeout(ctx, 4*time.Second)
-			defer cancel()
-
-			end := i + 100
-			if end > len(oneHopNetwork) {
-				end = len(oneHopNetwork)
+		for j := 0; j < config.WoTDepth; j++ {
+			log.Println("🌐 WoT depth", j)
+			oneHopNetwork := make([]string, 0)
+			for pubkey := range newPubkeyFollowerCount {
+				if _, exists := lastPubkeyFollowerCount[pubkey]; !exists {
+					oneHopNetwork = append(oneHopNetwork, pubkey)
+				}
+			}
+			lastPubkeyFollowerCount = make(map[string]int)
+			for pubkey, count := range newPubkeyFollowerCount {
+				lastPubkeyFollowerCount[pubkey] = count
 			}
 
-			filters = []nostr.Filter{{
-				Authors: oneHopNetwork[i:end],
-				Kinds:   []int{nostr.KindContactList, nostr.KindRelayListMetadata, nostr.KindProfileMetadata},
-			}}
+			stepSize := 300
+			for i := 0; i < len(oneHopNetwork); i += stepSize {
+				log.Println("🌐 fetching followers from", i, "to", i+stepSize, "of", len(oneHopNetwork))
 
-			for ev := range pool.SubManyEose(timeout, seedRelays, filters) {
-				for _, contact := range ev.Event.Tags.GetAll([]string{"p"}) {
-					if len(contact) > 1 {
-						pubkeyFollowerCount[contact[1]]++ // Increment follower count for the pubkey
+				end := i + stepSize
+				if end > len(oneHopNetwork) {
+					end = len(oneHopNetwork)
+				}
+
+				filters := []nostr.Filter{{
+					Authors: oneHopNetwork[i:end],
+					Kinds:   []int{nostr.KindContactList, nostr.KindRelayListMetadata, nostr.KindProfileMetadata},
+				}}
+
+				func() { // avoid "too many concurrent reqs" error
+					timeout, cancel := context.WithTimeout(ctx, 30*time.Second)
+					defer cancel()
+					for ev := range pool.SubManyEose(timeout, seedRelays, filters) {
+						for _, contact := range ev.Event.Tags.GetAll([]string{"p"}) {
+							if len(contact) > 1 && len(contact[1]) == 64 {
+								newPubkeyFollowerCount[contact[1]]++ // Increment follower count for the pubkey
+							}
+						}
+
+						for _, relay := range ev.Event.Tags.GetAll([]string{"r"}) {
+							appendRelay(relay[1])
+						}
+
+						if ev.Event.Kind == nostr.KindProfileMetadata {
+							wdb.Publish(ctx, *ev.Event)
+						}
 					}
-				}
-
-				for _, relay := range ev.Event.Tags.GetAll([]string{"r"}) {
-					appendRelay(relay[1])
-				}
-
-				if ev.Event.Kind == nostr.KindProfileMetadata {
-					wdb.Publish(ctx, *ev.Event)
-				}
+				}()
 			}
 		}
+		pubkeyFollowerCount = newPubkeyFollowerCount
 		log.Println("🫂  total network size:", len(pubkeyFollowerCount))
 		log.Println("🔗 relays discovered:", len(relays))
 	}
@@ -356,20 +386,6 @@ func appendPubkey(pubkey string) {
 	}
 
 	trustNetwork = append(trustNetwork, pubkey)
-}
-
-func appendOneHopNetwork(pubkey string) {
-	for _, pk := range oneHopNetwork {
-		if pk == pubkey {
-			return
-		}
-	}
-
-	if len(pubkey) != 64 {
-		return
-	}
-
-	oneHopNetwork = append(oneHopNetwork, pubkey)
 }
 
 func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
