@@ -46,7 +46,8 @@ var pool *nostr.SimplePool
 var wdb nostr.RelayStore
 var relays []string
 var config Config
-var trustNetwork []string
+
+// var trustNetwork []string
 var seedRelays []string
 var booted bool
 var trustNetworkMap map[string]bool
@@ -88,8 +89,6 @@ func main() {
 	relay.Info.Description = config.RelayDescription
 	relay.Info.Software = "https://github.com/bitvora/wot-relay"
 	relay.Info.Version = version
-
-	appendPubkey(config.RelayPubkey)
 
 	db := getDB()
 	if err := db.Init(); err != nil {
@@ -270,33 +269,45 @@ func updateTrustNetworkFilter() {
 	for pubkey, count := range pubkeyFollowerCount {
 		if count >= config.MinimumFollowers {
 			myTrustNetworkMap[pubkey] = true
-			appendPubkey(pubkey)
 		}
 	}
 
 	// avoid concurrent map read/write
 	trustNetworkMap = myTrustNetworkMap
-	log.Println("🌐 trust network map updated with", len(trustNetwork), "keys")
+	log.Println("🌐 trust network map updated with", len(trustNetworkMap), "keys")
 }
 
 func refreshProfiles(ctx context.Context) {
-	for i := 0; i < len(trustNetwork); i += 200 {
-		timeout, cancel := context.WithTimeout(ctx, 4*time.Second)
-		defer cancel()
+	log.Println("👤 refreshing profiles")
 
-		end := i + 200
-		if end > len(trustNetwork) {
-			end = len(trustNetwork)
-		}
+	trustNetwork := make([]string, 0, len(trustNetworkMap))
+	for pubkey := range trustNetworkMap {
+		trustNetwork = append(trustNetwork, pubkey)
+	}
 
-		filters := []nostr.Filter{{
-			Authors: trustNetwork[i:end],
-			Kinds:   []int{nostr.KindProfileMetadata},
-		}}
+	stepSize := 200
+	for i := 0; i < len(trustNetwork); i += stepSize {
+		log.Println("👤 refreshing profiles from", i, "to", i+stepSize, "of", len(trustNetwork))
 
-		for ev := range pool.SubManyEose(timeout, seedRelays, filters) {
-			wdb.Publish(ctx, *ev.Event)
-		}
+		// force cancel context every time
+		func() {
+			timeout, cancel := context.WithTimeout(ctx, 4*time.Second)
+			defer cancel()
+
+			end := i + 200
+			if end > len(trustNetwork) {
+				end = len(trustNetwork)
+			}
+
+			filters := []nostr.Filter{{
+				Authors: trustNetwork[i:end],
+				Kinds:   []int{nostr.KindProfileMetadata},
+			}}
+
+			for ev := range pool.SubManyEose(timeout, seedRelays, filters) {
+				wdb.Publish(ctx, *ev.Event)
+			}
+		}()
 	}
 	log.Println("👤 profiles refreshed: ", len(trustNetwork))
 }
@@ -306,6 +317,7 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 	runTrustNetworkRefresh := func(wotDepth int) {
 		newPubkeyFollowerCount := make(map[string]int)
 		lastPubkeyFollowerCount := make(map[string]int)
+		// initializes with seed pubkey
 		newPubkeyFollowerCount[config.RelayPubkey]++
 
 		log.Println("🌐 building web of trust graph")
@@ -362,8 +374,8 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 		log.Println("🔗 relays discovered:", len(relays))
 	}
 
-	// build partial trust network if woTDepth is > 2
-	if config.WoTDepth > 2 {
+	// build partial trust network if woTDepth is > 2 and its first run
+	if config.WoTDepth > 2 && len(trustNetworkMap) <= 1 {
 		runTrustNetworkRefresh(2)
 		updateTrustNetworkFilter()
 	}
@@ -384,20 +396,6 @@ func appendRelay(relay string) {
 		}
 	}
 	relays = append(relays, relay)
-}
-
-func appendPubkey(pubkey string) {
-	for _, pk := range trustNetwork {
-		if pk == pubkey {
-			return
-		}
-	}
-
-	if len(pubkey) != 64 {
-		return
-	}
-
-	trustNetwork = append(trustNetwork, pubkey)
 }
 
 func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
