@@ -125,12 +125,15 @@ func main() {
 	})
 
 	seedRelays = []string{
+		"wss://relay.damus.io",
 		"wss://nos.lol",
+		"wss://relay.nostr.band",
+		"wss://eden.nostr.land",
+		"wss://nostr.oxtr.dev/",
+		"wss://wot.utxo.one/",
 		"wss://nostr.mom",
 		"wss://purplepag.es",
 		"wss://purplerelay.com",
-		"wss://relay.damus.io",
-		"wss://relay.nostr.band",
 		"wss://relay.snort.social",
 		"wss://relayable.org",
 		"wss://relay.primal.net",
