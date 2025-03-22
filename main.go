@@ -375,7 +375,9 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 						}
 
 						for _, relay := range ev.Event.Tags.GetAll([]string{"r"}) {
-							appendRelay(relay[1])
+							if len(relay) > 1 {
+								appendRelay(relay[1])
+							}
 						}
 
 						if ev.Event.Kind == nostr.KindProfileMetadata {
