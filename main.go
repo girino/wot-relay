@@ -345,17 +345,17 @@ func refreshProfiles(ctx context.Context) {
 
 func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 
-	pubkeyFollowerCount := make(map[string]int)
-	runTrustNetworkRefresh := func(wotDepth int) {
+	runTrustNetworkRefresh := func(wotDepth int) map[string]int {
+		newPubkeyFollowerCount := make(map[string]int)
 		lastPubkeyFollowerCount := make(map[string]int)
 		// initializes with seed pubkey
-		pubkeyFollowerCount[config.RelayPubkey]++
+		newPubkeyFollowerCount[config.RelayPubkey]++
 
 		log.Println("🌐 building web of trust graph")
 		for j := 0; j < wotDepth; j++ {
 			log.Println("🌐 WoT depth", j)
 			oneHopNetwork := make([]string, 0)
-			for pubkey := range pubkeyFollowerCount {
+			for pubkey := range newPubkeyFollowerCount {
 				if _, exists := lastPubkeyFollowerCount[pubkey]; !exists {
 					if isValidPubkey(pubkey) {
 						oneHopNetwork = append(oneHopNetwork, pubkey)
@@ -365,7 +365,7 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 				}
 			}
 			lastPubkeyFollowerCount = make(map[string]int)
-			for pubkey, count := range pubkeyFollowerCount {
+			for pubkey, count := range newPubkeyFollowerCount {
 				lastPubkeyFollowerCount[pubkey] = count
 			}
 
@@ -398,7 +398,7 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 									fmt.Println("invalid pubkey in follows: ", pubkey)
 									continue
 								}
-								pubkeyFollowerCount[pubkey]++ // Increment follower count for the pubkey
+								newPubkeyFollowerCount[pubkey]++ // Increment follower count for the pubkey
 							}
 						}
 
@@ -409,18 +409,18 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 				}()
 			}
 		}
-		log.Println("🫂  total network size:", len(pubkeyFollowerCount))
+		log.Println("🫂  total network size:", len(newPubkeyFollowerCount))
+		return newPubkeyFollowerCount
 	}
 
 	// build partial trust network if woTDepth is > 2 and its first run
 	if config.WoTDepth > 2 && len(trustNetworkMap) <= 1 {
-		runTrustNetworkRefresh(2)
-		updateTrustNetworkFilter(pubkeyFollowerCount)
+
+		updateTrustNetworkFilter(runTrustNetworkRefresh(2))
 	}
 
 	for {
-		runTrustNetworkRefresh(config.WoTDepth)
-		updateTrustNetworkFilter(pubkeyFollowerCount)
+		updateTrustNetworkFilter(runTrustNetworkRefresh(config.WoTDepth))
 		deleteOldNotes(relay)
 		archiveTrustedNotes(ctx, relay)
 	}
