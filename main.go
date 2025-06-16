@@ -46,20 +46,17 @@ type Config struct {
 
 var pool *nostr.SimplePool
 var wdb nostr.RelayStore
-var relays []string
 var config Config
 
 // var trustNetwork []string
 var seedRelays []string
-var booted bool
 var trustNetworkMap map[string]bool
-var pubkeyFollowerCount = make(map[string]int)
 var trustedNotes uint64
 var untrustedNotes uint64
+var archiveEventSemaphore = make(chan struct{}, 100) // Limit concurrent goroutines
 
 func main() {
 	nostr.InfoLogger = log.New(io.Discard, "", 0)
-	booted = false
 	green := "\033[32m"
 	reset := "\033[0m"
 
@@ -116,8 +113,17 @@ func main() {
 	relay.QueryEvents = append(relay.QueryEvents, db.QueryEvents)
 	relay.DeleteEvent = append(relay.DeleteEvent, db.DeleteEvent)
 	relay.RejectEvent = append(relay.RejectEvent, func(ctx context.Context, event *nostr.Event) (bool, string) {
-		if !trustNetworkMap[event.PubKey] {
-			return true, "we are rebuilding the trust network, please try again later"
+		// Don't reject events if we haven't booted yet or if trust network is empty
+		hasNetwork := len(trustNetworkMap) > 1
+
+		// If we don't have a trust network yet, allow all events
+		if !hasNetwork {
+			return false, ""
+		}
+
+		trusted := trustNetworkMap[event.PubKey]
+		if !trusted {
+			return true, "not in web of trust"
 		}
 		if event.Kind == nostr.KindEncryptedDirectMessage {
 			return true, "only gift wrapped DMs are allowed"
@@ -147,6 +153,7 @@ func main() {
 	}
 
 	go refreshTrustNetwork(ctx, relay)
+	go monitorResources()
 
 	mux := relay.Router()
 	static := http.FileServer(http.Dir(config.StaticPath))
@@ -173,8 +180,6 @@ func main() {
 		}
 	})
 
-	go monitorResources()
-
 	log.Println("🎉 relay running on port :3334")
 	err := http.ListenAndServe(":3334", relay)
 	if err != nil {
@@ -183,16 +188,18 @@ func main() {
 }
 
 func monitorResources() {
-	var m runtime.MemStats
 	for {
-		log.Printf("Number of Goroutines: %d", runtime.NumGoroutine())
-		runtime.ReadMemStats(&m)
-		log.Printf("Alloc = %v MiB, Sys = %v MiB, NumGC = %v",
-			m.Alloc/1024/1024,
-			m.Sys/1024/1024,
-			m.NumGC)
-		log.Println("🫂 network size:", len(trustNetworkMap))
-		time.Sleep(30 * time.Second)
+		func() {
+			var m runtime.MemStats
+			log.Printf("Number of Goroutines: %d", runtime.NumGoroutine())
+			runtime.ReadMemStats(&m)
+			log.Printf("Alloc = %v MiB, Sys = %v MiB, NumGC = %v",
+				m.Alloc/1024/1024,
+				m.Sys/1024/1024,
+				m.NumGC)
+			log.Println("🫂 network size:", len(trustNetworkMap))
+		}()
+		time.Sleep(300 * time.Second)
 	}
 }
 
@@ -228,6 +235,18 @@ func LoadConfig() Config {
 
 	if os.Getenv("ARCHIVE_REACTIONS") == "" {
 		os.Setenv("ARCHIVE_REACTIONS", "FALSE")
+	}
+
+	if os.Getenv("MAX_TRUST_NETWORK") == "" {
+		os.Setenv("MAX_TRUST_NETWORK", "40000")
+	}
+
+	if os.Getenv("MAX_RELAYS") == "" {
+		os.Setenv("MAX_RELAYS", "1000")
+	}
+
+	if os.Getenv("MAX_ONE_HOP_NETWORK") == "" {
+		os.Setenv("MAX_ONE_HOP_NETWORK", "50000")
 	}
 
 	ignoredPubkeys := []string{}
@@ -273,10 +292,11 @@ func getEnv(key string) string {
 	return value
 }
 
-func updateTrustNetworkFilter() {
+func updateTrustNetworkFilter(pubkeyFollowerCount map[string]int) {
 	myTrustNetworkMap := make(map[string]bool)
 
-	log.Println("🌐 updating trust network map")
+	log.Println("🌐 building new trust network map")
+
 	for pubkey, count := range pubkeyFollowerCount {
 		if count >= config.MinimumFollowers {
 			myTrustNetworkMap[pubkey] = true
@@ -285,7 +305,7 @@ func updateTrustNetworkFilter() {
 
 	// avoid concurrent map read/write
 	trustNetworkMap = myTrustNetworkMap
-	log.Println("🌐 trust network map updated with", len(trustNetworkMap), "keys")
+	log.Println("🌐 trust network map updated with", len(myTrustNetworkMap), "keys")
 }
 
 func refreshProfiles(ctx context.Context) {
@@ -325,23 +345,27 @@ func refreshProfiles(ctx context.Context) {
 
 func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 
+	pubkeyFollowerCount := make(map[string]int)
 	runTrustNetworkRefresh := func(wotDepth int) {
-		newPubkeyFollowerCount := make(map[string]int)
 		lastPubkeyFollowerCount := make(map[string]int)
 		// initializes with seed pubkey
-		newPubkeyFollowerCount[config.RelayPubkey]++
+		pubkeyFollowerCount[config.RelayPubkey]++
 
 		log.Println("🌐 building web of trust graph")
 		for j := 0; j < wotDepth; j++ {
 			log.Println("🌐 WoT depth", j)
 			oneHopNetwork := make([]string, 0)
-			for pubkey := range newPubkeyFollowerCount {
+			for pubkey := range pubkeyFollowerCount {
 				if _, exists := lastPubkeyFollowerCount[pubkey]; !exists {
-					oneHopNetwork = append(oneHopNetwork, pubkey)
+					if isValidPubkey(pubkey) {
+						oneHopNetwork = append(oneHopNetwork, pubkey)
+					} else {
+						log.Println("invalid pubkey in one hop network: ", pubkey)
+					}
 				}
 			}
 			lastPubkeyFollowerCount = make(map[string]int)
-			for pubkey, count := range newPubkeyFollowerCount {
+			for pubkey, count := range pubkeyFollowerCount {
 				lastPubkeyFollowerCount[pubkey] = count
 			}
 
@@ -370,13 +394,11 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 									fmt.Println("ignoring follows from pubkey: ", pubkey)
 									continue
 								}
-								newPubkeyFollowerCount[pubkey]++ // Increment follower count for the pubkey
-							}
-						}
-
-						for _, relay := range ev.Event.Tags.GetAll([]string{"r"}) {
-							if len(relay) > 1 {
-								appendRelay(relay[1])
+								if !isValidPubkey(pubkey) {
+									fmt.Println("invalid pubkey in follows: ", pubkey)
+									continue
+								}
+								pubkeyFollowerCount[pubkey]++ // Increment follower count for the pubkey
 							}
 						}
 
@@ -387,33 +409,21 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 				}()
 			}
 		}
-		pubkeyFollowerCount = newPubkeyFollowerCount
 		log.Println("🫂  total network size:", len(pubkeyFollowerCount))
-		log.Println("🔗 relays discovered:", len(relays))
 	}
 
 	// build partial trust network if woTDepth is > 2 and its first run
 	if config.WoTDepth > 2 && len(trustNetworkMap) <= 1 {
 		runTrustNetworkRefresh(2)
-		updateTrustNetworkFilter()
+		updateTrustNetworkFilter(pubkeyFollowerCount)
 	}
 
 	for {
 		runTrustNetworkRefresh(config.WoTDepth)
-		updateTrustNetworkFilter()
+		updateTrustNetworkFilter(pubkeyFollowerCount)
 		deleteOldNotes(relay)
 		archiveTrustedNotes(ctx, relay)
 	}
-}
-
-func appendRelay(relay string) {
-
-	for _, r := range relays {
-		if r == relay {
-			return
-		}
-	}
-	relays = append(relays, relay)
 }
 
 func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
@@ -423,12 +433,12 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 	done := make(chan struct{})
 
 	go func() {
+		defer close(done)
 		if config.ArchivalSync {
 			go refreshProfiles(ctx)
 
 			var filters []nostr.Filter
 			if config.ArchiveReactions {
-
 				filters = []nostr.Filter{{
 					Kinds: []int{
 						nostr.KindArticle,
@@ -464,7 +474,16 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 			log.Println("📦 archiving trusted notes...")
 
 			for ev := range pool.SubMany(timeout, seedRelays, filters) {
-				go archiveEvent(ctx, relay, *ev.Event)
+				// Use semaphore to limit concurrent goroutines
+				select {
+				case archiveEventSemaphore <- struct{}{}:
+					go func(event nostr.Event) {
+						defer func() { <-archiveEventSemaphore }()
+						archiveEvent(ctx, relay, event)
+					}(*ev.Event)
+				case <-timeout.Done():
+					return
+				}
 			}
 
 			log.Println("📦 archived", trustedNotes, "trusted notes and discarded", untrustedNotes, "untrusted notes")
@@ -474,8 +493,6 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 			case <-timeout.Done():
 			}
 		}
-
-		close(done)
 	}()
 
 	select {
@@ -487,7 +504,9 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 }
 
 func archiveEvent(ctx context.Context, relay *khatru.Relay, ev nostr.Event) {
-	if trustNetworkMap[ev.PubKey] {
+	trusted := trustNetworkMap[ev.PubKey]
+
+	if trusted {
 		wdb.Publish(ctx, ev)
 		relay.BroadcastEvent(&ev)
 		trustedNotes++
@@ -526,6 +545,7 @@ func deleteOldNotes(relay *khatru.Relay) error {
 			nostr.KindZap,
 			nostr.KindTextNote,
 		},
+		Limit: 1000, // Process in batches to avoid memory issues
 	}
 
 	ch, err := relay.QueryEvents[0](ctx, filter)
@@ -534,27 +554,47 @@ func deleteOldNotes(relay *khatru.Relay) error {
 		return err
 	}
 
-	events := make([]*nostr.Event, 0)
+	// Process events in batches to avoid memory issues
+	batchSize := 100
+	events := make([]*nostr.Event, 0, batchSize)
+	count := 0
 
 	for evt := range ch {
 		events = append(events, evt)
+		count++
+
+		if len(events) >= batchSize {
+			// Delete this batch
+			for num_evt, del_evt := range events {
+				for _, del := range relay.DeleteEvent {
+					if err := del(ctx, del_evt); err != nil {
+						log.Printf("error deleting note %d of batch. event id: %s", num_evt, del_evt.ID)
+						return err
+					}
+				}
+			}
+			events = events[:0] // Reset slice but keep capacity
+		}
 	}
 
-	if len(events) < 1 {
-		log.Println("0 old notes found")
-		return nil
-	}
-
-	for num_evt, del_evt := range events {
-		for _, del := range relay.DeleteEvent {
-			if err := del(ctx, del_evt); err != nil {
-				log.Printf("error deleting note %d of %d. event id: %s", num_evt, len(events), del_evt.ID)
-				return err
+	// Delete remaining events
+	if len(events) > 0 {
+		for num_evt, del_evt := range events {
+			for _, del := range relay.DeleteEvent {
+				if err := del(ctx, del_evt); err != nil {
+					log.Printf("error deleting note %d of final batch. event id: %s", num_evt, del_evt.ID)
+					return err
+				}
 			}
 		}
 	}
 
-	log.Printf("%d old (until %d) notes deleted", len(events), oldAge)
+	if count == 0 {
+		log.Println("0 old notes found")
+	} else {
+		log.Printf("%d old (until %d) notes deleted", count, oldAge)
+	}
+
 	return nil
 }
 
@@ -570,6 +610,18 @@ func splitAndTrim(input string) []string {
 		items[i] = strings.TrimSpace(item)
 	}
 	return items
+}
+
+func isValidPubkey(pubkey string) bool {
+	if len(pubkey) != 64 {
+		return false
+	}
+	for _, c := range pubkey {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 func isIgnored(pubkey string, ignoredPubkeys []string) bool {
