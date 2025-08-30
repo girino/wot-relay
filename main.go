@@ -8,9 +8,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/fiatjaf/eventstore"
@@ -51,9 +55,11 @@ var config Config
 // var trustNetwork []string
 var seedRelays []string
 var trustNetworkMap map[string]bool
-var trustedNotes uint64
-var untrustedNotes uint64
+var trustNetworkMutex sync.RWMutex
+var trustedNotes int64
+var untrustedNotes int64
 var archiveEventSemaphore = make(chan struct{}, 100) // Limit concurrent goroutines
+var indexTemplate *template.Template
 
 func main() {
 	nostr.InfoLogger = log.New(io.Discard, "", 0)
@@ -80,6 +86,9 @@ func main() {
 	ctx := context.Background()
 	pool = nostr.NewSimplePool(ctx)
 	config = LoadConfig()
+
+	// Initialize template once at startup
+	indexTemplate = template.Must(template.ParseFiles(config.IndexPath))
 
 	relay.Info.Name = config.RelayName
 	relay.Info.PubKey = config.RelayPubkey
@@ -114,14 +123,16 @@ func main() {
 	relay.DeleteEvent = append(relay.DeleteEvent, db.DeleteEvent)
 	relay.RejectEvent = append(relay.RejectEvent, func(ctx context.Context, event *nostr.Event) (bool, string) {
 		// Don't reject events if we haven't booted yet or if trust network is empty
+		trustNetworkMutex.RLock()
 		hasNetwork := len(trustNetworkMap) > 1
+		trusted := trustNetworkMap[event.PubKey]
+		trustNetworkMutex.RUnlock()
 
 		// If we don't have a trust network yet, allow all events
 		if !hasNetwork {
 			return false, ""
 		}
 
-		trusted := trustNetworkMap[event.PubKey]
 		if !trusted {
 			return true, "not in web of trust"
 		}
@@ -162,7 +173,6 @@ func main() {
 	mux.Handle("GET /favicon.ico", http.StripPrefix("/", static))
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		tmpl := template.Must(template.ParseFiles(os.Getenv("INDEX_PATH")))
 		data := struct {
 			RelayName        string
 			RelayPubkey      string
@@ -174,17 +184,39 @@ func main() {
 			RelayDescription: config.RelayDescription,
 			RelayURL:         config.RelayURL,
 		}
-		err := tmpl.Execute(w, data)
+		err := indexTemplate.Execute(w, data)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			log.Printf("Template execution error: %v", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		}
 	})
 
-	log.Println("🎉 relay running on port :3334")
-	err := http.ListenAndServe(":3334", relay)
-	if err != nil {
-		log.Fatal(err)
+	// Create server with graceful shutdown
+	server := &http.Server{
+		Addr:    ":3334",
+		Handler: relay,
 	}
+
+	go func() {
+		log.Println("🎉 relay running on port :3334")
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal(err)
+		}
+	}()
+
+	// Graceful shutdown handling
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	<-sigChan
+
+	log.Println("🛑 shutting down gracefully...")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("Server shutdown error: %v", err)
+	}
+	log.Println("✅ server stopped")
 }
 
 func monitorResources() {
@@ -197,7 +229,15 @@ func monitorResources() {
 				m.Alloc/1024/1024,
 				m.Sys/1024/1024,
 				m.NumGC)
-			log.Println("🫂 network size:", len(trustNetworkMap))
+
+			trustNetworkMutex.RLock()
+			networkSize := len(trustNetworkMap)
+			trustNetworkMutex.RUnlock()
+
+			log.Printf("🫂 network size: %d, trusted notes: %d, untrusted notes: %d",
+				networkSize,
+				atomic.LoadInt64(&trustedNotes),
+				atomic.LoadInt64(&untrustedNotes))
 		}()
 		time.Sleep(300 * time.Second)
 	}
@@ -303,18 +343,23 @@ func updateTrustNetworkFilter(pubkeyFollowerCount map[string]int) {
 		}
 	}
 
-	// avoid concurrent map read/write
+	// Thread-safe update of trust network map
+	trustNetworkMutex.Lock()
 	trustNetworkMap = myTrustNetworkMap
+	trustNetworkMutex.Unlock()
+
 	log.Println("🌐 trust network map updated with", len(myTrustNetworkMap), "keys")
 }
 
 func refreshProfiles(ctx context.Context) {
 	log.Println("👤 refreshing profiles")
 
+	trustNetworkMutex.RLock()
 	trustNetwork := make([]string, 0, len(trustNetworkMap))
 	for pubkey := range trustNetworkMap {
 		trustNetwork = append(trustNetwork, pubkey)
 	}
+	trustNetworkMutex.RUnlock()
 
 	stepSize := 200
 	for i := 0; i < len(trustNetwork); i += stepSize {
@@ -479,19 +524,24 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 				case archiveEventSemaphore <- struct{}{}:
 					go func(event nostr.Event) {
 						defer func() { <-archiveEventSemaphore }()
-						archiveEvent(ctx, relay, event)
+						select {
+						case <-timeout.Done():
+							return
+						default:
+							archiveEvent(ctx, relay, event)
+						}
 					}(*ev.Event)
 				case <-timeout.Done():
 					return
 				}
 			}
 
-			log.Println("📦 archived", trustedNotes, "trusted notes and discarded", untrustedNotes, "untrusted notes")
+			log.Printf("📦 archived %d trusted notes and discarded %d untrusted notes",
+				atomic.LoadInt64(&trustedNotes),
+				atomic.LoadInt64(&untrustedNotes))
 		} else {
 			log.Println("🔄 web of trust will refresh in", config.RefreshInterval, "hours")
-			select {
-			case <-timeout.Done():
-			}
+			<-timeout.Done()
 		}
 	}()
 
@@ -504,14 +554,16 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 }
 
 func archiveEvent(ctx context.Context, relay *khatru.Relay, ev nostr.Event) {
+	trustNetworkMutex.RLock()
 	trusted := trustNetworkMap[ev.PubKey]
+	trustNetworkMutex.RUnlock()
 
 	if trusted {
 		wdb.Publish(ctx, ev)
 		relay.BroadcastEvent(&ev)
-		trustedNotes++
+		atomic.AddInt64(&trustedNotes, 1)
 	} else {
-		untrustedNotes++
+		atomic.AddInt64(&untrustedNotes, 1)
 	}
 }
 
