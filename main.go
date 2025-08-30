@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/fiatjaf/eventstore"
-	"github.com/fiatjaf/eventstore/badger"
+	"github.com/fiatjaf/eventstore/sqlite3"
 	"github.com/fiatjaf/khatru"
 	"github.com/fiatjaf/khatru/policies"
 	"github.com/joho/godotenv"
@@ -86,7 +86,7 @@ func main() {
 	relay.Info.Icon = config.RelayIcon
 	relay.Info.Contact = config.RelayContact
 	relay.Info.Description = config.RelayDescription
-	relay.Info.Software = "https://github.com/bitvora/wot-relay"
+	relay.Info.Software = "https://github.com/girino/wot-relay"
 	relay.Info.Version = version
 
 	db := getDB()
@@ -97,7 +97,7 @@ func main() {
 
 	relay.RejectEvent = append(relay.RejectEvent,
 		policies.RejectEventsWithBase64Media,
-		policies.EventIPRateLimiter(5, time.Minute*1, 30),
+		policies.EventIPRateLimiter(50, time.Minute*1, 300),
 	)
 
 	relay.RejectFilter = append(relay.RejectFilter,
@@ -598,9 +598,14 @@ func deleteOldNotes(relay *khatru.Relay) error {
 	return nil
 }
 
-func getDB() badger.BadgerBackend {
-	return badger.BadgerBackend{
-		Path: getEnv("DB_PATH"),
+//	func getDB() badger.BadgerBackend {
+//		return badger.BadgerBackend{
+//			Path: getEnv("DB_PATH"),
+//		}
+//	}
+func getDB() sqlite3.SQLite3Backend {
+	return sqlite3.SQLite3Backend{
+		DatabaseURL: getEnv("DB_PATH"),
 	}
 }
 
