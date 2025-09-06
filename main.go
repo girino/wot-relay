@@ -58,7 +58,7 @@ var trustNetworkMap map[string]bool
 var trustNetworkMutex sync.RWMutex
 var trustedNotes int64
 var untrustedNotes int64
-var archiveEventSemaphore = make(chan struct{}, 100) // Limit concurrent goroutines
+var archiveEventSemaphore = make(chan struct{}, 500) // Limit concurrent goroutines (increased from 100)
 var indexTemplate *template.Template
 
 func main() {
@@ -102,6 +102,12 @@ func main() {
 	if err := db.Init(); err != nil {
 		panic(err)
 	}
+	
+	// Configure connection pooling and add custom indexes
+	if err := optimizeDatabase(&db); err != nil {
+		log.Printf("Warning: Database optimization failed: %v", err)
+	}
+	
 	wdb = eventstore.RelayWrapper{Store: &db}
 
 	relay.RejectEvent = append(relay.RejectEvent,
@@ -234,10 +240,21 @@ func monitorResources() {
 			networkSize := len(trustNetworkMap)
 			trustNetworkMutex.RUnlock()
 
-			log.Printf("🫂 network size: %d, trusted notes: %d, untrusted notes: %d",
-				networkSize,
-				atomic.LoadInt64(&trustedNotes),
+			log.Printf("🫂 network size: %d, trusted notes: %d, untrusted notes: %d", 
+				networkSize, 
+				atomic.LoadInt64(&trustedNotes), 
 				atomic.LoadInt64(&untrustedNotes))
+			
+			// Database performance monitoring
+			if wdb != nil {
+				if db, ok := wdb.(*eventstore.RelayWrapper); ok {
+					if sqliteDB, ok := db.Store.(*sqlite3.SQLite3Backend); ok {
+						stats := sqliteDB.Stats()
+						log.Printf("📊 DB connections: open=%d, inUse=%d, idle=%d, waitCount=%d", 
+							stats.OpenConnections, stats.InUse, stats.Idle, stats.WaitCount)
+					}
+				}
+			}
 		}()
 		time.Sleep(300 * time.Second)
 	}
@@ -655,9 +672,56 @@ func deleteOldNotes(relay *khatru.Relay) error {
 //			Path: getEnv("DB_PATH"),
 //		}
 //	}
+func optimizeDatabase(db *sqlite3.SQLite3Backend) error {
+	// Configure connection pooling for better performance
+	db.SetMaxOpenConns(25)        // Maximum number of open connections
+	db.SetMaxIdleConns(5)         // Maximum number of idle connections
+	db.SetConnMaxLifetime(5 * time.Minute) // Maximum connection lifetime
+	
+	// Add custom indexes for specific query patterns used by the relay
+	customIndexes := []string{
+		// Composite index for pubkey + time queries (most common)
+		`CREATE INDEX IF NOT EXISTS pubkey_time_idx ON event(pubkey, created_at DESC)`,
+		
+		// Composite index for kind + pubkey + time queries
+		`CREATE INDEX IF NOT EXISTS kind_pubkey_time_idx ON event(kind, pubkey, created_at DESC)`,
+		
+		// Index for time-based queries (used in deleteOldNotes)
+		`CREATE INDEX IF NOT EXISTS created_at_idx ON event(created_at)`,
+		
+		// Index for pubkey + kind queries (common in filters)
+		`CREATE INDEX IF NOT EXISTS pubkey_kind_idx ON event(pubkey, kind)`,
+		
+		// Index for tags JSON queries (if needed for complex tag filtering)
+		`CREATE INDEX IF NOT EXISTS tags_content_idx ON event(tags, content)`,
+	}
+	
+	log.Println("🔧 Adding custom database indexes...")
+	for i, idx := range customIndexes {
+		if _, err := db.Exec(idx); err != nil {
+			log.Printf("Warning: Failed to create index %d: %v", i+1, err)
+			// Continue with other indexes even if one fails
+		}
+	}
+	
+	log.Println("✅ Database optimization completed")
+	return nil
+}
+
 func getDB() sqlite3.SQLite3Backend {
+	dbPath := getEnv("DB_PATH")
+	
+	// Add SQLite performance optimizations to URL
+	// WAL mode for better concurrency, larger cache, memory temp store, etc.
+	optimizedURL := fmt.Sprintf("%s?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=10000&_temp_store=MEMORY&_mmap_size=268435456&_busy_timeout=30000", dbPath)
+	
 	return sqlite3.SQLite3Backend{
-		DatabaseURL: getEnv("DB_PATH"),
+		DatabaseURL:       optimizedURL,
+		QueryLimit:        1000,        // Increase from default 100
+		QueryIDsLimit:     2000,        // Increase from default 500
+		QueryAuthorsLimit: 2000,        // Increase from default 500
+		QueryKindsLimit:   50,          // Increase from default 10
+		QueryTagsLimit:    50,          // Increase from default 10
 	}
 }
 
