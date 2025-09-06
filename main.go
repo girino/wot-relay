@@ -66,7 +66,7 @@ var memoryMonitor *MemoryMonitor
 
 // Memory monitoring
 type MemoryMonitor struct {
-	maxMemoryMB    int64
+	maxMemoryMB      int64
 	warningThreshold float64
 }
 
@@ -80,17 +80,17 @@ func NewMemoryMonitor(maxMemoryMB int64) *MemoryMonitor {
 func (mm *MemoryMonitor) CheckMemory() (bool, string) {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
-	
+
 	currentMB := int64(m.Alloc / 1024 / 1024)
-	
+
 	if currentMB > mm.maxMemoryMB {
 		return true, fmt.Sprintf("Memory limit exceeded: %dMB > %dMB", currentMB, mm.maxMemoryMB)
 	}
-	
+
 	if float64(currentMB)/float64(mm.maxMemoryMB) > mm.warningThreshold {
 		return false, fmt.Sprintf("Memory warning: %dMB (%.1f%% of limit)", currentMB, float64(currentMB)/float64(mm.maxMemoryMB)*100)
 	}
-	
+
 	return false, ""
 }
 
@@ -125,9 +125,9 @@ func (bp *BatchProcessor) Start(ctx context.Context, relay *khatru.Relay) {
 func (bp *BatchProcessor) AddEvent(event nostr.Event) {
 	bp.mutex.Lock()
 	defer bp.mutex.Unlock()
-	
+
 	bp.events = append(bp.events, event)
-	
+
 	// Process batch if it reaches the size limit
 	if len(bp.events) >= bp.batchSize {
 		go bp.processBatch(bp.events)
@@ -137,7 +137,7 @@ func (bp *BatchProcessor) AddEvent(event nostr.Event) {
 
 func (bp *BatchProcessor) processBatches(ctx context.Context, relay *khatru.Relay) {
 	defer bp.wg.Done()
-	
+
 	for {
 		select {
 		case <-bp.ticker.C:
@@ -196,7 +196,7 @@ func (ep *EventProcessor) Start(ctx context.Context, relay *khatru.Relay) {
 
 func (ep *EventProcessor) worker(ctx context.Context, relay *khatru.Relay) {
 	defer ep.wg.Done()
-	
+
 	for {
 		select {
 		case event := <-ep.eventChan:
@@ -335,12 +335,12 @@ func main() {
 	// Initialize performance components
 	eventProcessor = NewEventProcessor(100) // 100 workers for event processing
 	eventProcessor.Start(ctx, relay)
-	
+
 	batchProcessor = NewBatchProcessor(50, 1*time.Second) // Batch 50 events or wait 1 second
 	batchProcessor.Start(ctx, relay)
-	
+
 	memoryMonitor = NewMemoryMonitor(1024) // 1GB memory limit
-	
+
 	go refreshTrustNetwork(ctx, relay)
 	go monitorResources()
 
@@ -388,21 +388,21 @@ func main() {
 	<-sigChan
 
 	log.Println("🛑 shutting down gracefully...")
-	
+
 	// Stop processors first
 	if eventProcessor != nil {
 		log.Println("🛑 stopping event processor...")
 		eventProcessor.Stop()
 	}
-	
+
 	if batchProcessor != nil {
 		log.Println("🛑 stopping batch processor...")
 		batchProcessor.Stop()
 	}
-	
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	
+
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("Server shutdown error: %v", err)
 	}
@@ -434,12 +434,12 @@ func monitorResources() {
 				if db, ok := wdb.(*eventstore.RelayWrapper); ok {
 					if sqliteDB, ok := db.Store.(*sqlite3.SQLite3Backend); ok {
 						stats := sqliteDB.Stats()
-						log.Printf("📊 DB connections: open=%d, inUse=%d, idle=%d, waitCount=%d", 
+						log.Printf("📊 DB connections: open=%d, inUse=%d, idle=%d, waitCount=%d",
 							stats.OpenConnections, stats.InUse, stats.Idle, stats.WaitCount)
 					}
 				}
 			}
-			
+
 			// Memory monitoring
 			if memoryMonitor != nil {
 				exceeded, message := memoryMonitor.CheckMemory()
@@ -588,12 +588,12 @@ func refreshProfiles(ctx context.Context) {
 				end = len(trustNetwork)
 			}
 
-		filters := []nostr.Filter{{
-			Authors: trustNetwork[i:end],
-			Kinds:   []int{nostr.KindProfileMetadata},
-		}}
+			filters := []nostr.Filter{{
+				Authors: trustNetwork[i:end],
+				Kinds:   []int{nostr.KindProfileMetadata},
+			}}
 
-		for ev := range pool.FetchMany(timeout, seedRelays, filters[0]) {
+			for ev := range pool.FetchMany(timeout, seedRelays, filters[0]) {
 				wdb.Publish(ctx, *ev.Event)
 			}
 		}()
@@ -731,7 +731,7 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 
 			log.Println("📦 archiving trusted notes...")
 
-			for ev := range pool.SubMany(timeout, seedRelays, filters) {
+			for ev := range pool.FetchMany(timeout, seedRelays, filters[0]) {
 				// Use worker pool instead of creating unlimited goroutines
 				select {
 				case <-timeout.Done():
