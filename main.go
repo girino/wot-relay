@@ -315,21 +315,25 @@ func main() {
 	seedRelays = []string{
 		"wss://relay.damus.io",
 		"wss://nos.lol",
-		"wss://relay.nostr.band",
-		"wss://eden.nostr.land",
-		"wss://nostr.oxtr.dev/",
+		// "wss://relay.nostr.band",
+		// "wss://eden.nostr.land",
+		// "wss://nostr.oxtr.dev/",
 		"wss://wot.utxo.one/",
-		"wss://nostr.mom",
-		"wss://purplepag.es",
-		"wss://purplerelay.com",
+		// "wss://nostr.mom",
+		// "wss://purplepag.es",
+		// "wss://purplerelay.com",
 		"wss://relay.snort.social",
-		"wss://relayable.org",
+		// "wss://relayable.org",
 		"wss://relay.primal.net",
-		"wss://relay.nostr.bg",
-		"wss://no.str.cr",
-		"wss://nostr21.com",
-		"wss://nostrue.com",
-		"wss://relay.siamstr.com",
+		// "wss://relay.nostr.bg",
+		// "wss://no.str.cr",
+		// "wss://nostr21.com",
+		// "wss://nostrue.com",
+		// "wss://relay.siamstr.com",
+		"wss://wot.girino.org",
+		"wss://nostr.girino.org",
+		"wss://haven.girino.org/outbox",
+		"wss://haven.girino.org/inbox",
 	}
 
 	// Initialize performance components
@@ -645,18 +649,20 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 					timeout, cancel := context.WithTimeout(ctx, 5*time.Second)
 					defer cancel()
 					for ev := range pool.FetchMany(timeout, seedRelays, filters[0]) {
-						for _, contact := range ev.Event.Tags.GetAll([]string{"p"}) {
-							if len(contact) > 1 && len(contact[1]) == 64 {
-								pubkey := contact[1]
-								if isIgnored(pubkey, config.IgnoredPubkeys) {
-									fmt.Println("ignoring follows from pubkey: ", pubkey)
-									continue
+						for _, contact := range ev.Event.Tags {
+							if len(contact) > 0 && contact[0] == "p" {
+								if len(contact) > 1 && len(contact[1]) == 64 {
+									pubkey := contact[1]
+									if isIgnored(pubkey, config.IgnoredPubkeys) {
+										fmt.Println("ignoring follows from pubkey: ", pubkey)
+										continue
+									}
+									if !isValidPubkey(pubkey) {
+										fmt.Println("invalid pubkey in follows: ", pubkey)
+										continue
+									}
+									newPubkeyFollowerCount[pubkey]++ // Increment follower count for the pubkey
 								}
-								if !isValidPubkey(pubkey) {
-									fmt.Println("invalid pubkey in follows: ", pubkey)
-									continue
-								}
-								newPubkeyFollowerCount[pubkey]++ // Increment follower count for the pubkey
 							}
 						}
 
