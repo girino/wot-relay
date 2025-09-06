@@ -182,7 +182,7 @@ type EventProcessor struct {
 func NewEventProcessor(workerCount int) *EventProcessor {
 	return &EventProcessor{
 		workerCount: workerCount,
-		eventChan:   make(chan nostr.Event, workerCount*2), // Buffer for 2x worker count
+		eventChan:   make(chan nostr.Event, workerCount*10), // Buffer for 10x worker count
 		quit:        make(chan struct{}),
 	}
 }
@@ -337,7 +337,7 @@ func main() {
 	}
 
 	// Initialize performance components
-	eventProcessor = NewEventProcessor(100) // 100 workers for event processing
+	eventProcessor = NewEventProcessor(300) // 300 workers for event processing
 	eventProcessor.Start(ctx, relay)
 
 	batchProcessor = NewBatchProcessor(50, 1*time.Second) // Batch 50 events or wait 1 second
