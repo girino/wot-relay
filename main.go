@@ -588,12 +588,12 @@ func refreshProfiles(ctx context.Context) {
 				end = len(trustNetwork)
 			}
 
-			filters := []nostr.Filter{{
-				Authors: trustNetwork[i:end],
-				Kinds:   []int{nostr.KindProfileMetadata},
-			}}
+		filters := []nostr.Filter{{
+			Authors: trustNetwork[i:end],
+			Kinds:   []int{nostr.KindProfileMetadata},
+		}}
 
-			for ev := range pool.SubManyEose(timeout, seedRelays, filters) {
+		for ev := range pool.FetchMany(timeout, seedRelays, filters[0]) {
 				wdb.Publish(ctx, *ev.Event)
 			}
 		}()
@@ -644,7 +644,7 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 				func() { // avoid "too many concurrent reqs" error
 					timeout, cancel := context.WithTimeout(ctx, 5*time.Second)
 					defer cancel()
-					for ev := range pool.SubManyEose(timeout, seedRelays, filters) {
+					for ev := range pool.FetchMany(timeout, seedRelays, filters[0]) {
 						for _, contact := range ev.Event.Tags.GetAll([]string{"p"}) {
 							if len(contact) > 1 && len(contact[1]) == 64 {
 								pubkey := contact[1]
