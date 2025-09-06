@@ -60,6 +60,169 @@ var trustedNotes int64
 var untrustedNotes int64
 var archiveEventSemaphore = make(chan struct{}, 500) // Limit concurrent goroutines (increased from 100)
 var indexTemplate *template.Template
+var eventProcessor *EventProcessor
+var batchProcessor *BatchProcessor
+var memoryMonitor *MemoryMonitor
+
+// Memory monitoring
+type MemoryMonitor struct {
+	maxMemoryMB    int64
+	warningThreshold float64
+}
+
+func NewMemoryMonitor(maxMemoryMB int64) *MemoryMonitor {
+	return &MemoryMonitor{
+		maxMemoryMB:      maxMemoryMB,
+		warningThreshold: 0.8, // Warn at 80% of max memory
+	}
+}
+
+func (mm *MemoryMonitor) CheckMemory() (bool, string) {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	
+	currentMB := int64(m.Alloc / 1024 / 1024)
+	
+	if currentMB > mm.maxMemoryMB {
+		return true, fmt.Sprintf("Memory limit exceeded: %dMB > %dMB", currentMB, mm.maxMemoryMB)
+	}
+	
+	if float64(currentMB)/float64(mm.maxMemoryMB) > mm.warningThreshold {
+		return false, fmt.Sprintf("Memory warning: %dMB (%.1f%% of limit)", currentMB, float64(currentMB)/float64(mm.maxMemoryMB)*100)
+	}
+	
+	return false, ""
+}
+
+// Batch processor for database operations
+type BatchProcessor struct {
+	batchSize    int
+	batchTimeout time.Duration
+	events       []nostr.Event
+	mutex        sync.Mutex
+	ticker       *time.Ticker
+	quit         chan struct{}
+	wg           sync.WaitGroup
+	relay        *khatru.Relay
+}
+
+func NewBatchProcessor(batchSize int, batchTimeout time.Duration) *BatchProcessor {
+	return &BatchProcessor{
+		batchSize:    batchSize,
+		batchTimeout: batchTimeout,
+		events:       make([]nostr.Event, 0, batchSize),
+		quit:         make(chan struct{}),
+	}
+}
+
+func (bp *BatchProcessor) Start(ctx context.Context, relay *khatru.Relay) {
+	bp.relay = relay
+	bp.ticker = time.NewTicker(bp.batchTimeout)
+	bp.wg.Add(1)
+	go bp.processBatches(ctx, relay)
+}
+
+func (bp *BatchProcessor) AddEvent(event nostr.Event) {
+	bp.mutex.Lock()
+	defer bp.mutex.Unlock()
+	
+	bp.events = append(bp.events, event)
+	
+	// Process batch if it reaches the size limit
+	if len(bp.events) >= bp.batchSize {
+		go bp.processBatch(bp.events)
+		bp.events = make([]nostr.Event, 0, bp.batchSize)
+	}
+}
+
+func (bp *BatchProcessor) processBatches(ctx context.Context, relay *khatru.Relay) {
+	defer bp.wg.Done()
+	
+	for {
+		select {
+		case <-bp.ticker.C:
+			bp.mutex.Lock()
+			if len(bp.events) > 0 {
+				events := make([]nostr.Event, len(bp.events))
+				copy(events, bp.events)
+				bp.events = bp.events[:0]
+				bp.mutex.Unlock()
+				go bp.processBatch(events)
+			} else {
+				bp.mutex.Unlock()
+			}
+		case <-bp.quit:
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (bp *BatchProcessor) processBatch(events []nostr.Event) {
+	for _, event := range events {
+		archiveEvent(context.Background(), bp.relay, event)
+	}
+}
+
+func (bp *BatchProcessor) Stop() {
+	bp.ticker.Stop()
+	close(bp.quit)
+	bp.wg.Wait()
+}
+
+// Worker pool for event processing
+type EventProcessor struct {
+	workerCount int
+	eventChan   chan nostr.Event
+	quit        chan struct{}
+	wg          sync.WaitGroup
+}
+
+func NewEventProcessor(workerCount int) *EventProcessor {
+	return &EventProcessor{
+		workerCount: workerCount,
+		eventChan:   make(chan nostr.Event, workerCount*2), // Buffer for 2x worker count
+		quit:        make(chan struct{}),
+	}
+}
+
+func (ep *EventProcessor) Start(ctx context.Context, relay *khatru.Relay) {
+	for i := 0; i < ep.workerCount; i++ {
+		ep.wg.Add(1)
+		go ep.worker(ctx, relay)
+	}
+}
+
+func (ep *EventProcessor) worker(ctx context.Context, relay *khatru.Relay) {
+	defer ep.wg.Done()
+	
+	for {
+		select {
+		case event := <-ep.eventChan:
+			archiveEvent(ctx, relay, event)
+		case <-ep.quit:
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (ep *EventProcessor) ProcessEvent(event nostr.Event) {
+	select {
+	case ep.eventChan <- event:
+		// Event queued successfully
+	default:
+		// Channel is full, drop event to prevent memory buildup
+		log.Printf("Warning: Event processing queue full, dropping event %s", event.ID)
+	}
+}
+
+func (ep *EventProcessor) Stop() {
+	close(ep.quit)
+	ep.wg.Wait()
+}
 
 func main() {
 	nostr.InfoLogger = log.New(io.Discard, "", 0)
@@ -102,12 +265,12 @@ func main() {
 	if err := db.Init(); err != nil {
 		panic(err)
 	}
-	
+
 	// Configure connection pooling and add custom indexes
 	if err := optimizeDatabase(&db); err != nil {
 		log.Printf("Warning: Database optimization failed: %v", err)
 	}
-	
+
 	wdb = eventstore.RelayWrapper{Store: &db}
 
 	relay.RejectEvent = append(relay.RejectEvent,
@@ -169,6 +332,15 @@ func main() {
 		"wss://relay.siamstr.com",
 	}
 
+	// Initialize performance components
+	eventProcessor = NewEventProcessor(100) // 100 workers for event processing
+	eventProcessor.Start(ctx, relay)
+	
+	batchProcessor = NewBatchProcessor(50, 1*time.Second) // Batch 50 events or wait 1 second
+	batchProcessor.Start(ctx, relay)
+	
+	memoryMonitor = NewMemoryMonitor(1024) // 1GB memory limit
+	
 	go refreshTrustNetwork(ctx, relay)
 	go monitorResources()
 
@@ -216,9 +388,21 @@ func main() {
 	<-sigChan
 
 	log.Println("🛑 shutting down gracefully...")
+	
+	// Stop processors first
+	if eventProcessor != nil {
+		log.Println("🛑 stopping event processor...")
+		eventProcessor.Stop()
+	}
+	
+	if batchProcessor != nil {
+		log.Println("🛑 stopping batch processor...")
+		batchProcessor.Stop()
+	}
+	
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
+	
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("Server shutdown error: %v", err)
 	}
@@ -240,11 +424,11 @@ func monitorResources() {
 			networkSize := len(trustNetworkMap)
 			trustNetworkMutex.RUnlock()
 
-			log.Printf("🫂 network size: %d, trusted notes: %d, untrusted notes: %d", 
-				networkSize, 
-				atomic.LoadInt64(&trustedNotes), 
+			log.Printf("🫂 network size: %d, trusted notes: %d, untrusted notes: %d",
+				networkSize,
+				atomic.LoadInt64(&trustedNotes),
 				atomic.LoadInt64(&untrustedNotes))
-			
+
 			// Database performance monitoring
 			if wdb != nil {
 				if db, ok := wdb.(*eventstore.RelayWrapper); ok {
@@ -253,6 +437,18 @@ func monitorResources() {
 						log.Printf("📊 DB connections: open=%d, inUse=%d, idle=%d, waitCount=%d", 
 							stats.OpenConnections, stats.InUse, stats.Idle, stats.WaitCount)
 					}
+				}
+			}
+			
+			// Memory monitoring
+			if memoryMonitor != nil {
+				exceeded, message := memoryMonitor.CheckMemory()
+				if exceeded {
+					log.Printf("🚨 %s", message)
+					// Force garbage collection when memory limit exceeded
+					runtime.GC()
+				} else if message != "" {
+					log.Printf("⚠️ %s", message)
 				}
 			}
 		}()
@@ -536,20 +732,12 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 			log.Println("📦 archiving trusted notes...")
 
 			for ev := range pool.SubMany(timeout, seedRelays, filters) {
-				// Use semaphore to limit concurrent goroutines
+				// Use worker pool instead of creating unlimited goroutines
 				select {
-				case archiveEventSemaphore <- struct{}{}:
-					go func(event nostr.Event) {
-						defer func() { <-archiveEventSemaphore }()
-						select {
-						case <-timeout.Done():
-							return
-						default:
-							archiveEvent(ctx, relay, event)
-						}
-					}(*ev.Event)
 				case <-timeout.Done():
 					return
+				default:
+					eventProcessor.ProcessEvent(*ev.Event)
 				}
 			}
 
@@ -674,28 +862,28 @@ func deleteOldNotes(relay *khatru.Relay) error {
 //	}
 func optimizeDatabase(db *sqlite3.SQLite3Backend) error {
 	// Configure connection pooling for better performance
-	db.SetMaxOpenConns(25)        // Maximum number of open connections
-	db.SetMaxIdleConns(5)         // Maximum number of idle connections
+	db.SetMaxOpenConns(25)                 // Maximum number of open connections
+	db.SetMaxIdleConns(5)                  // Maximum number of idle connections
 	db.SetConnMaxLifetime(5 * time.Minute) // Maximum connection lifetime
-	
+
 	// Add custom indexes for specific query patterns used by the relay
 	customIndexes := []string{
 		// Composite index for pubkey + time queries (most common)
 		`CREATE INDEX IF NOT EXISTS pubkey_time_idx ON event(pubkey, created_at DESC)`,
-		
+
 		// Composite index for kind + pubkey + time queries
 		`CREATE INDEX IF NOT EXISTS kind_pubkey_time_idx ON event(kind, pubkey, created_at DESC)`,
-		
+
 		// Index for time-based queries (used in deleteOldNotes)
 		`CREATE INDEX IF NOT EXISTS created_at_idx ON event(created_at)`,
-		
+
 		// Index for pubkey + kind queries (common in filters)
 		`CREATE INDEX IF NOT EXISTS pubkey_kind_idx ON event(pubkey, kind)`,
-		
+
 		// Index for tags JSON queries (if needed for complex tag filtering)
 		`CREATE INDEX IF NOT EXISTS tags_content_idx ON event(tags, content)`,
 	}
-	
+
 	log.Println("🔧 Adding custom database indexes...")
 	for i, idx := range customIndexes {
 		if _, err := db.Exec(idx); err != nil {
@@ -703,25 +891,25 @@ func optimizeDatabase(db *sqlite3.SQLite3Backend) error {
 			// Continue with other indexes even if one fails
 		}
 	}
-	
+
 	log.Println("✅ Database optimization completed")
 	return nil
 }
 
 func getDB() sqlite3.SQLite3Backend {
 	dbPath := getEnv("DB_PATH")
-	
+
 	// Add SQLite performance optimizations to URL
 	// WAL mode for better concurrency, larger cache, memory temp store, etc.
 	optimizedURL := fmt.Sprintf("%s?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=10000&_temp_store=MEMORY&_mmap_size=268435456&_busy_timeout=30000", dbPath)
-	
+
 	return sqlite3.SQLite3Backend{
 		DatabaseURL:       optimizedURL,
-		QueryLimit:        1000,        // Increase from default 100
-		QueryIDsLimit:     2000,        // Increase from default 500
-		QueryAuthorsLimit: 2000,        // Increase from default 500
-		QueryKindsLimit:   50,          // Increase from default 10
-		QueryTagsLimit:    50,          // Increase from default 10
+		QueryLimit:        1000, // Increase from default 100
+		QueryIDsLimit:     2000, // Increase from default 500
+		QueryAuthorsLimit: 2000, // Increase from default 500
+		QueryKindsLimit:   50,   // Increase from default 10
+		QueryTagsLimit:    50,   // Increase from default 10
 	}
 }
 
