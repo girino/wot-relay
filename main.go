@@ -687,6 +687,10 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 		updateTrustNetworkFilter(runTrustNetworkRefresh(config.WoTDepth))
 		deleteOldNotes(relay)
 		archiveTrustedNotes(ctx, relay)
+		
+		// Wait for the configured refresh interval before next cycle
+		log.Printf("🔄 web of trust will refresh in %d hours", config.RefreshInterval)
+		time.Sleep(time.Duration(config.RefreshInterval) * time.Hour)
 	}
 }
 
