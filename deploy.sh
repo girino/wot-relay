@@ -104,12 +104,12 @@ echo -e "${GREEN}🔗 Relay URL: $RELAY_URL${NC}"
 echo -e "${GREEN}📊 Stats URL: http://localhost:3334/stats${NC}"
 echo -e "${GREEN}❤️  Health URL: http://localhost:3334/health${NC}"
 
-# Optional: Start monitoring stack
-if [ "$2" = "with-monitoring" ]; then
-    echo -e "${YELLOW}📊 Starting monitoring stack...${NC}"
-    docker-compose -f "$COMPOSE_FILE" --profile with-monitoring up -d prometheus grafana
-    echo -e "${GREEN}📊 Prometheus: http://localhost:9090${NC}"
-    echo -e "${GREEN}📈 Grafana: http://localhost:3000 (admin/admin)${NC}"
+# Optional: Start with Nginx
+if [ "$2" = "with-nginx" ]; then
+    echo -e "${YELLOW}🌐 Starting with Nginx reverse proxy...${NC}"
+    docker-compose -f "$COMPOSE_FILE" --profile with-nginx up -d nginx
+    echo -e "${GREEN}🌐 Nginx: http://localhost:80 (redirects to HTTPS)${NC}"
+    echo -e "${GREEN}🔒 HTTPS: https://localhost:443${NC}"
 fi
 
 echo -e "${GREEN}✅ Deployment script completed${NC}"

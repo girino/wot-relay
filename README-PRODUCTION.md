@@ -6,20 +6,20 @@ This guide covers deploying the WoT Relay in a production environment with Docke
 
 1. **Clone and configure:**
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/bitvora/wot-relay.git
    cd wot-relay
    cp env.example .env
    # Edit .env with your configuration
    ```
 
-2. **Deploy:**
+2. **Deploy (includes Tor proxy):**
    ```bash
-   ./deploy.sh
+   docker-compose -f docker-compose.prod.yml up -d
    ```
 
-3. **Deploy with monitoring:**
+3. **Deploy with Nginx (SSL termination):**
    ```bash
-   ./deploy.sh latest with-monitoring
+   docker-compose -f docker-compose.prod.yml --profile with-nginx up -d
    ```
 
 ## 📋 Prerequisites
@@ -78,10 +78,9 @@ LOG_LEVEL=INFO
 - **wot-relay**: Main relay application (includes eventstore patch for QueryKindsLimit)
 - **nginx**: Reverse proxy with SSL termination (optional)
 
-### Monitoring Services (with-monitoring profile)
+### Optional Services
 
-- **prometheus**: Metrics collection
-- **grafana**: Metrics visualization
+- **nginx**: Reverse proxy with SSL termination (with-nginx profile)
 
 ## 🔧 Deployment Options
 
@@ -104,11 +103,6 @@ docker-compose -f docker-compose.prod.yml up -d
 ### With Nginx (SSL termination)
 ```bash
 docker-compose -f docker-compose.prod.yml --profile with-nginx up -d
-```
-
-### With Full Monitoring Stack
-```bash
-docker-compose -f docker-compose.prod.yml --profile with-monitoring up -d
 ```
 
 ## 📊 Monitoring & Health Checks
@@ -183,14 +177,10 @@ docker-compose -f docker-compose.prod.yml --profile with-monitoring up -d
 
 ## 📈 Monitoring Setup
 
-### Prometheus
-- URL: `http://localhost:9090`
-- Scrapes metrics from `/stats` endpoint every 30 seconds
-
-### Grafana
-- URL: `http://localhost:3000`
-- Default credentials: `admin/admin`
-- Import dashboards from `./grafana/dashboards/`
+### Autoheal
+- Automatically monitors container health
+- Restarts unhealthy containers
+- Configurable via `AUTOHEAL_INTERVAL` environment variable
 
 ## 🔄 Maintenance
 

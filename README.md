@@ -1,6 +1,16 @@
 # WoT Relay
 
-WOT Relay is a Nostr relay that saves all the notes that people you follow, and people they follow are posting. It's built on the [Khatru](https://khatru.nostr.technology) framework.
+WoT Relay is a high-performance Nostr relay that saves all the notes from people you follow and their extended network (Web of Trust). Built on the [Khatru](https://khatru.nostr.technology) framework with production-ready features including health monitoring, structured logging, and anonymous access via Tor.
+
+## Features
+
+- **Web of Trust**: Automatically discovers and archives notes from your extended network
+- **Performance Optimized**: Multi-threaded processing, batch operations, and memory monitoring
+- **Production Ready**: Health checks, structured logging, metrics, and graceful shutdown
+- **Anonymous Access**: Built-in Tor proxy for privacy-preserving access
+- **Docker Support**: Complete containerization with production deployment
+- **Auto-healing**: Automatic container health monitoring and restart
+- **Configurable**: Extensive environment variable configuration
 
 # Available Relays
 
@@ -182,43 +192,45 @@ Follow the instructions to generate the certificate.
 
 Once everything is set up, the relay will be running on `localhost:3334` or your domain name if you set up nginx.
 
-## Start the Project with Docker Compose
+## Quick Start with Docker
 
-To start the project using Docker Compose, follow these steps:
+### Development/Testing
 
-1. Ensure Docker and Docker Compose are installed on your system.
-2. Navigate to the project directory.
-3. Ensure the `.env` file is present in the project directory and has the necessary environment variables set.
-4. You can also change the paths of the `db` folder and `templates` folder in the `docker-compose.yml` file.
+```bash
+# Clone the repository
+git clone https://github.com/bitvora/wot-relay.git
+cd wot-relay
 
-   ```yaml
-   volumes:
-     - "./db:/app/db" # only change the left side before the colon
-     - "./templates/index.html:${INDEX_PATH}" # only change the left side before the colon
-     - "./templates/static:${INDEX_PATH}" # only change the left side before the colon
-   ```
+# Copy environment template
+cp env.example .env
 
-5. Run the following command:
+# Edit .env with your configuration
+nano .env
 
-   ```sh
-   # in foreground
-   docker compose up --build
-   # in background
-   docker compose up --build -d
-   ```
+# Start with Docker Compose
+docker compose up --build -d
+```
 
-6. For updating the relay, run the following command:
+### Production Deployment
 
-   ```sh
-   git pull
-   docker compose build --no-cache
-   # in foreground
-   docker compose up
-   # in background
-   docker compose up -d
-   ```
+For production deployment, use the optimized production configuration:
 
-This will build the Docker image and start the `wot-relay` service as defined in the `docker-compose.yml` file. The application will be accessible on port 3334.
+```bash
+# Production deployment (includes Tor proxy)
+docker-compose -f docker-compose.prod.yml up -d
+
+# With Nginx reverse proxy
+docker-compose -f docker-compose.prod.yml --profile with-nginx up -d
+```
+
+**Production Features:**
+- Multi-stage optimized Docker build
+- Auto-healing container monitoring
+- Anonymous access via Tor proxy
+- Health checks and structured logging
+- Resource limits and restart policies
+
+See [README-PRODUCTION.md](README-PRODUCTION.md) for detailed production setup instructions.
 
 ### 7. Hidden Service with Tor (optional)
 
