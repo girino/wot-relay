@@ -30,6 +30,14 @@ var (
 	version string
 )
 
+// max returns the maximum of two int64 values
+func max(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 // LogLevel represents the logging level
 type LogLevel int
 
@@ -401,7 +409,9 @@ func main() {
 		log.Printf("Warning: Database optimization failed: %v", err)
 	}
 
-	wdb = eventstore.RelayWrapper{Store: &db}
+	// Wrap the database with profiling
+	profiledDB := NewProfiledEventStore(&db)
+	wdb = eventstore.RelayWrapper{Store: profiledDB}
 
 	relay.RejectEvent = append(relay.RejectEvent,
 		policies.RejectEventsWithBase64Media,
@@ -573,15 +583,30 @@ func main() {
 
 		// Get database stats if available
 		var dbStats map[string]interface{}
+		var eventStoreStats map[string]interface{}
 		if wdb != nil {
 			if db, ok := wdb.(*eventstore.RelayWrapper); ok {
-				if sqliteDB, ok := db.Store.(*sqlite3.SQLite3Backend); ok {
-					stats := sqliteDB.Stats()
-					dbStats = map[string]interface{}{
-						"open_connections": stats.OpenConnections,
-						"in_use":           stats.InUse,
-						"idle":             stats.Idle,
-						"wait_count":       stats.WaitCount,
+				if profiledDB, ok := db.Store.(*ProfiledEventStore); ok {
+					// Get eventstore performance stats
+					perfStats := profiledDB.GetStats()
+					eventStoreStats = map[string]interface{}{
+						"save_event_calls":     perfStats.SaveEventCalls,
+						"save_event_avg_ms":    perfStats.SaveEventDuration.Milliseconds() / max(1, perfStats.SaveEventCalls),
+						"query_events_calls":   perfStats.QueryEventsCalls,
+						"query_events_avg_ms":  perfStats.QueryEventsDuration.Milliseconds() / max(1, perfStats.QueryEventsCalls),
+						"delete_event_calls":   perfStats.DeleteEventCalls,
+						"delete_event_avg_ms":  perfStats.DeleteEventDuration.Milliseconds() / max(1, perfStats.DeleteEventCalls),
+					}
+					
+					// Also get SQLite connection stats
+					if sqliteDB, ok := profiledDB.GetBackend().(*sqlite3.SQLite3Backend); ok {
+						stats := sqliteDB.Stats()
+						dbStats = map[string]interface{}{
+							"open_connections": stats.OpenConnections,
+							"in_use":           stats.InUse,
+							"idle":             stats.Idle,
+							"wait_count":       stats.WaitCount,
+						}
 					}
 				}
 			}
@@ -635,6 +660,10 @@ func main() {
 
 		if dbStats != nil {
 			stats["database"] = dbStats
+		}
+
+		if eventStoreStats != nil {
+			stats["eventstore"] = eventStoreStats
 		}
 
 		json.NewEncoder(w).Encode(stats)
@@ -719,14 +748,20 @@ func monitorResources() {
 			// Database performance monitoring
 			if wdb != nil {
 				if db, ok := wdb.(*eventstore.RelayWrapper); ok {
-					if sqliteDB, ok := db.Store.(*sqlite3.SQLite3Backend); ok {
-						stats := sqliteDB.Stats()
-						logger.Info("MONITOR", "Database connections", map[string]interface{}{
-							"open_connections": stats.OpenConnections,
-							"in_use":           stats.InUse,
-							"idle":             stats.Idle,
-							"wait_count":       stats.WaitCount,
-						})
+					if profiledDB, ok := db.Store.(*ProfiledEventStore); ok {
+						// Log eventstore performance stats
+						profiledDB.LogStats()
+						
+						// Also get SQLite connection stats
+						if sqliteDB, ok := profiledDB.GetBackend().(*sqlite3.SQLite3Backend); ok {
+							stats := sqliteDB.Stats()
+							logger.Info("MONITOR", "Database connections", map[string]interface{}{
+								"open_connections": stats.OpenConnections,
+								"in_use":           stats.InUse,
+								"idle":             stats.Idle,
+								"wait_count":       stats.WaitCount,
+							})
+						}
 					}
 				}
 			}
