@@ -342,9 +342,17 @@ type EventProcessor struct {
 }
 
 func NewEventProcessor(workerCount int) *EventProcessor {
+	// Get worker multiplier from environment, default to 50
+	workerMultiplier := 50 // Default multiplier
+	if multiplierEnv := os.Getenv("WORKER_MULTIPLIER"); multiplierEnv != "" {
+		if parsed, err := strconv.Atoi(multiplierEnv); err == nil && parsed > 0 {
+			workerMultiplier = parsed
+		}
+	}
+	
 	return &EventProcessor{
 		workerCount: workerCount,
-		eventChan:   make(chan nostr.Event, workerCount*50), // Buffer for 50x worker count
+		eventChan:   make(chan nostr.Event, workerCount*workerMultiplier), // Buffer for Nx worker count
 		quit:        make(chan struct{}),
 	}
 }
