@@ -753,7 +753,7 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 
 			for {
 				pageCount++
-				log.Printf("📦 fetching page %d (until: %d, limit: %d, max days: %d)", pageCount, until, limit, archiveMaxDays)
+				log.Printf("📦 fetching page %d (until: %d, limit: %d, max days: %d, kinds: %v)", pageCount, until, limit, archiveMaxDays, filters[0].Kinds)
 
 				// Create filter with pagination
 				paginatedFilter := filters[0]
@@ -775,6 +775,12 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 						// Update 'until' to the oldest event we've seen
 						if ev.Event.CreatedAt < until {
 							until = ev.Event.CreatedAt
+						}
+
+						// Debug: log first few events to understand what we're getting
+						if pageEvents <= 3 {
+							log.Printf("📦 DEBUG: event %d - kind: %d, author: %s, created: %d", 
+								pageEvents, ev.Event.Kind, ev.Event.PubKey, ev.Event.CreatedAt)
 						}
 					}
 				}
