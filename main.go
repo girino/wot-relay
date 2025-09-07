@@ -183,7 +183,7 @@ type EventProcessor struct {
 func NewEventProcessor(workerCount int) *EventProcessor {
 	return &EventProcessor{
 		workerCount: workerCount,
-		eventChan:   make(chan nostr.Event, workerCount*10), // Buffer for 10x worker count
+		eventChan:   make(chan nostr.Event, workerCount*20), // Buffer for 20x worker count
 		quit:        make(chan struct{}),
 	}
 }
@@ -338,7 +338,7 @@ func main() {
 	}
 
 	// Initialize performance components
-	eventProcessor = NewEventProcessor(300) // 300 workers for event processing
+	eventProcessor = NewEventProcessor(1000) // 1000 workers for event processing
 	eventProcessor.Start(ctx, relay)
 
 	batchProcessor = NewBatchProcessor(50, 1*time.Second) // Batch 50 events or wait 1 second
@@ -747,11 +747,11 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 				archiveMaxDays = 90 // Default to 90 days (3 months)
 			}
 			maxArchiveTime := nostr.Now() - (nostr.Timestamp(archiveMaxDays) * 24 * 60 * 60)
-			
+
 			// Use smaller time windows to get more comprehensive coverage
 			const timeWindowHours = 24 // 24-hour windows
 			timeWindowSeconds := nostr.Timestamp(timeWindowHours * 60 * 60)
-			
+
 			until := nostr.Now()
 			limit := 500 // Smaller limit to avoid relay restrictions
 			totalEvents := 0
@@ -764,7 +764,7 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 					windowStart = maxArchiveTime
 				}
 
-				log.Printf("📦 fetching time window %d (from: %d, until: %d, limit: %d, kinds: %v)", 
+				log.Printf("📦 fetching time window %d (from: %d, until: %d, limit: %d, kinds: %v)",
 					windowCount, windowStart, until, limit, filters[0].Kinds)
 
 				// Create filter with time window
@@ -787,7 +787,7 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 
 						// Debug: log first few events to understand what we're getting
 						if windowEvents <= 3 {
-							log.Printf("📦 DEBUG: event %d - kind: %d, author: %s, created: %d", 
+							log.Printf("📦 DEBUG: event %d - kind: %d, author: %s, created: %d",
 								windowEvents, ev.Event.Kind, ev.Event.PubKey, ev.Event.CreatedAt)
 						}
 					}
@@ -807,7 +807,7 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 			log.Printf("📦 archived %d trusted notes and discarded %d untrusted notes",
 				atomic.LoadInt64(&trustedNotes),
 				atomic.LoadInt64(&untrustedNotes))
-			
+
 			log.Println("📦 archiving completed, now refreshing profiles...")
 			refreshProfiles(ctx)
 		} else {
