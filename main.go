@@ -208,7 +208,6 @@ type Config struct {
 	ArchiveMaxDays    int
 	IgnoredPubkeys    []string
 	WoTDepth          int
-	ProfileMaxAgeDays int
 }
 
 var pool *nostr.SimplePool
@@ -846,9 +845,6 @@ func LoadConfig() Config {
 		os.Setenv("ARCHIVE_MAX_DAYS", "15")
 	}
 
-	if os.Getenv("PROFILE_MAX_AGE_DAYS") == "" {
-		os.Setenv("PROFILE_MAX_AGE_DAYS", "30")
-	}
 
 	if os.Getenv("LOG_LEVEL") == "" {
 		os.Setenv("LOG_LEVEL", "INFO")
@@ -857,7 +853,6 @@ func LoadConfig() Config {
 	minimumFollowers, _ := strconv.Atoi(os.Getenv("MINIMUM_FOLLOWERS"))
 	maxAgeDays, _ := strconv.Atoi(os.Getenv("MAX_AGE_DAYS"))
 	archiveMaxDays, _ := strconv.Atoi(os.Getenv("ARCHIVE_MAX_DAYS"))
-	profileMaxAgeDays, _ := strconv.Atoi(os.Getenv("PROFILE_MAX_AGE_DAYS"))
 	woTDepth, _ := strconv.Atoi(os.Getenv("WOT_DEPTH"))
 
 	config := Config{
@@ -878,7 +873,6 @@ func LoadConfig() Config {
 		ArchiveMaxDays:    archiveMaxDays,
 		IgnoredPubkeys:    ignoredPubkeys,
 		WoTDepth:          woTDepth,
-		ProfileMaxAgeDays: profileMaxAgeDays,
 	}
 
 	return config
