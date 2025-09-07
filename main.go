@@ -223,7 +223,6 @@ var untrustedNotes int64
 var archiveEventSemaphore = make(chan struct{}, 500) // Limit concurrent goroutines (increased from 100)
 var indexTemplate *template.Template
 var eventProcessor *EventProcessor
-var batchProcessor *BatchProcessor
 var memoryMonitor *MemoryMonitor
 
 // Memory monitoring
@@ -256,82 +255,6 @@ func (mm *MemoryMonitor) CheckMemory() (bool, string) {
 	return false, ""
 }
 
-// Batch processor for database operations
-type BatchProcessor struct {
-	batchSize    int
-	batchTimeout time.Duration
-	events       []nostr.Event
-	mutex        sync.Mutex
-	ticker       *time.Ticker
-	quit         chan struct{}
-	wg           sync.WaitGroup
-	relay        *khatru.Relay
-}
-
-func NewBatchProcessor(batchSize int, batchTimeout time.Duration) *BatchProcessor {
-	return &BatchProcessor{
-		batchSize:    batchSize,
-		batchTimeout: batchTimeout,
-		events:       make([]nostr.Event, 0, batchSize),
-		quit:         make(chan struct{}),
-	}
-}
-
-func (bp *BatchProcessor) Start(ctx context.Context, relay *khatru.Relay) {
-	bp.relay = relay
-	bp.ticker = time.NewTicker(bp.batchTimeout)
-	bp.wg.Add(1)
-	go bp.processBatches(ctx, relay)
-}
-
-func (bp *BatchProcessor) AddEvent(event nostr.Event) {
-	bp.mutex.Lock()
-	defer bp.mutex.Unlock()
-
-	bp.events = append(bp.events, event)
-
-	// Process batch if it reaches the size limit
-	if len(bp.events) >= bp.batchSize {
-		go bp.processBatch(bp.events)
-		bp.events = make([]nostr.Event, 0, bp.batchSize)
-	}
-}
-
-func (bp *BatchProcessor) processBatches(ctx context.Context, relay *khatru.Relay) {
-	defer bp.wg.Done()
-
-	for {
-		select {
-		case <-bp.ticker.C:
-			bp.mutex.Lock()
-			if len(bp.events) > 0 {
-				events := make([]nostr.Event, len(bp.events))
-				copy(events, bp.events)
-				bp.events = bp.events[:0]
-				bp.mutex.Unlock()
-				go bp.processBatch(events)
-			} else {
-				bp.mutex.Unlock()
-			}
-		case <-bp.quit:
-			return
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-func (bp *BatchProcessor) processBatch(events []nostr.Event) {
-	for _, event := range events {
-		archiveEvent(context.Background(), bp.relay, event)
-	}
-}
-
-func (bp *BatchProcessor) Stop() {
-	bp.ticker.Stop()
-	close(bp.quit)
-	bp.wg.Wait()
-}
 
 // Worker pool for event processing
 type EventProcessor struct {
@@ -409,10 +332,10 @@ func (ep *EventProcessor) Stop() {
 func (ep *EventProcessor) GetWorkerStats() map[string]interface{} {
 	busyWorkers := atomic.LoadInt64(&ep.busyWorkers)
 	return map[string]interface{}{
-		"total_workers": ep.workerCount,
-		"busy_workers":  busyWorkers,
-		"idle_workers":  ep.workerCount - int(busyWorkers),
-		"queue_size":    len(ep.eventChan),
+		"total_workers":  ep.workerCount,
+		"busy_workers":   busyWorkers,
+		"idle_workers":   ep.workerCount - int(busyWorkers),
+		"queue_size":     len(ep.eventChan),
 		"queue_capacity": cap(ep.eventChan),
 	}
 }
@@ -544,9 +467,6 @@ func main() {
 	}
 	eventProcessor = NewEventProcessor(workerCount)
 	eventProcessor.Start(ctx, relay)
-
-	batchProcessor = NewBatchProcessor(50, 1*time.Second) // Batch 50 events or wait 1 second
-	batchProcessor.Start(ctx, relay)
 
 	memoryMonitor = NewMemoryMonitor(1024) // 1GB memory limit
 
@@ -746,10 +666,6 @@ func main() {
 		eventProcessor.Stop()
 	}
 
-	if batchProcessor != nil {
-		logger.Info("SHUTDOWN", "Stopping batch processor")
-		batchProcessor.Stop()
-	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
