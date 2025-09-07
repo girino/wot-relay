@@ -591,7 +591,7 @@ func main() {
 			logger.Info("STATS", "wdb is not nil, attempting type assertion", map[string]interface{}{
 				"wdb_type": fmt.Sprintf("%T", wdb),
 			})
-			if db, ok := wdb.(*eventstore.RelayWrapper); ok {
+			if db, ok := wdb.(eventstore.RelayWrapper); ok {
 				logger.Info("STATS", "Successfully cast to RelayWrapper", map[string]interface{}{
 					"store_nil": db.Store == nil,
 				})
@@ -774,7 +774,7 @@ func monitorResources() {
 
 			// Database performance monitoring
 			if wdb != nil {
-				if db, ok := wdb.(*eventstore.RelayWrapper); ok {
+				if db, ok := wdb.(eventstore.RelayWrapper); ok {
 					if profiledDB, ok := db.Store.(*ProfiledEventStore); ok {
 						// Log eventstore performance stats
 						profiledDB.LogStats()
