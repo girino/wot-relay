@@ -4,7 +4,7 @@ services:
   wot-relay:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.prod
     container_name: wot-relay
     restart: unless-stopped
     ports:

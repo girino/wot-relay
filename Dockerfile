@@ -32,10 +32,10 @@ ENV STATIC_PATH="templates/static"
 RUN touch .env
 
 # Build the Go application
-RUN go build -o main .
+RUN go build -o wot-relay .
 
 # Expose the port that the application will run on
 EXPOSE 3334
 
 # Set the command to run the executable
-CMD ["./main"]
+CMD ["./wot-relay"]
