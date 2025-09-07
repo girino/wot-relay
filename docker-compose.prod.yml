@@ -105,8 +105,6 @@ services:
       - "autoheal=true"
     networks:
       - wot-network
-    profiles:
-      - with-tor
 
 networks:
   wot-network:
