@@ -45,6 +45,10 @@ services:
       - MAX_TRUST_NETWORK=${MAX_TRUST_NETWORK:-40000}
       - MAX_RELAYS=${MAX_RELAYS:-1000}
       - MAX_ONE_HOP_NETWORK=${MAX_ONE_HOP_NETWORK:-50000}
+      
+      # Watchtower Configuration
+      - WATCHTOWER_POLL_INTERVAL=${WATCHTOWER_POLL_INTERVAL:-300}
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
     
     volumes:
       - relay_data:/app/data
@@ -134,6 +138,40 @@ services:
       - wot-network
     profiles:
       - with-monitoring
+
+  # Watchtower for automatic container updates and health monitoring
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: wot-relay-watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WATCHTOWER_POLL_INTERVAL=${WATCHTOWER_POLL_INTERVAL:-300}
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_INCLUDE_STOPPED=true
+      - WATCHTOWER_REVIVE_STOPPED=true
+      - WATCHTOWER_LABEL_ENABLE=true
+      - WATCHTOWER_NOTIFICATIONS=slack
+      - WATCHTOWER_NOTIFICATION_SLACK_HOOK_URL=${SLACK_WEBHOOK_URL:-}
+      - WATCHTOWER_NOTIFICATION_SLACK_IDENTIFIER=wot-relay
+    command: >
+      --interval ${WATCHTOWER_POLL_INTERVAL:-300}
+      --cleanup
+      --include-stopped
+      --revive-stopped
+      --label-enable
+      wot-relay
+      wot-relay-nginx
+      wot-relay-prometheus
+      wot-relay-grafana
+    networks:
+      - wot-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   relay_data:
