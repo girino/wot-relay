@@ -919,7 +919,7 @@ func refreshProfiles(ctx context.Context) {
 		"check_type":     "missing_only",
 	})
 
-	for _, pubkey := range trustNetwork {
+	for i, pubkey := range trustNetwork {
 		// Check if profile exists at all
 		needsRefresh := true
 
@@ -944,6 +944,17 @@ func refreshProfiles(ctx context.Context) {
 
 		if needsRefresh {
 			pubkeysToRefresh = append(pubkeysToRefresh, pubkey)
+		}
+
+		// Log progress every 1000 profiles
+		if (i+1)%1000 == 0 {
+			progress := float64(i+1) / float64(len(trustNetwork)) * 100
+			logger.Info("PROFILES", "Profile check progress", map[string]interface{}{
+				"checked":        i + 1,
+				"total":          len(trustNetwork),
+				"progress_pct":   progress,
+				"missing_found":  len(pubkeysToRefresh),
+			})
 		}
 	}
 
