@@ -255,7 +255,6 @@ func (mm *MemoryMonitor) CheckMemory() (bool, string) {
 	return false, ""
 }
 
-
 // Worker pool for event processing
 type EventProcessor struct {
 	workerCount int
@@ -311,12 +310,12 @@ func (ep *EventProcessor) worker(ctx context.Context, relay *khatru.Relay) {
 	}
 }
 
-func (ep *EventProcessor) ProcessEvent(event nostr.Event) {
+func (ep *EventProcessor) QueueEvent(event nostr.Event) {
 	// Block until we can send the event - don't drop any events
 	// Check if channel is closed to avoid panic
 	select {
 	case ep.eventChan <- event:
-		// Event sent successfully
+		// Event queued successfully
 	case <-ep.quit:
 		// Processor is shutting down, drop the event
 		return
@@ -665,7 +664,6 @@ func main() {
 		logger.Info("SHUTDOWN", "Stopping event processor")
 		eventProcessor.Stop()
 	}
-
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1225,7 +1223,7 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 							}
 							seenEvents[ev.Event.ID] = true
 
-							eventProcessor.ProcessEvent(*ev.Event)
+							eventProcessor.QueueEvent(*ev.Event)
 							pageEvents++
 							kindEvents++
 							totalEvents++
