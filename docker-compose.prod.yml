@@ -1,0 +1,148 @@
+version: '3.8'
+
+services:
+  wot-relay:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wot-relay
+    restart: unless-stopped
+    ports:
+      - "3334:3334"
+    environment:
+      # Relay Configuration
+      - RELAY_NAME=${RELAY_NAME:-WoT Relay}
+      - RELAY_PUBKEY=${RELAY_PUBKEY}
+      - RELAY_DESCRIPTION=${RELAY_DESCRIPTION:-Web of Trust Relay}
+      - RELAY_URL=${RELAY_URL:-wss://relay.example.com}
+      - RELAY_CONTACT=${RELAY_CONTACT:-${RELAY_PUBKEY}}
+      - RELAY_ICON=${RELAY_ICON:-https://pfp.nostr.build/56306a93a88d4c657d8a3dfa57b55a4ed65b709eee927b5dafaab4d5330db21f.png}
+      
+      # Database Configuration
+      - DB_PATH=${DB_PATH:-/app/data/relay.db}
+      - INDEX_PATH=${INDEX_PATH:-/app/templates/index.html}
+      - STATIC_PATH=${STATIC_PATH:-/app/templates/static}
+      
+      # Performance Configuration
+      - REFRESH_INTERVAL_HOURS=${REFRESH_INTERVAL_HOURS:-3}
+      - MINIMUM_FOLLOWERS=${MINIMUM_FOLLOWERS:-1}
+      - WOT_DEPTH=${WOT_DEPTH:-2}
+      - MAX_AGE_DAYS=${MAX_AGE_DAYS:-0}
+      
+      # Archiving Configuration
+      - ARCHIVAL_SYNC=${ARCHIVAL_SYNC:-TRUE}
+      - ARCHIVE_REACTIONS=${ARCHIVE_REACTIONS:-FALSE}
+      - ARCHIVE_MAX_DAYS=${ARCHIVE_MAX_DAYS:-15}
+      - PROFILE_MAX_AGE_DAYS=${PROFILE_MAX_AGE_DAYS:-30}
+      
+      # Logging Configuration
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      
+      # Network Configuration
+      - IGNORE_FOLLOWS_LIST=${IGNORE_FOLLOWS_LIST:-}
+      
+      # Limits
+      - MAX_TRUST_NETWORK=${MAX_TRUST_NETWORK:-40000}
+      - MAX_RELAYS=${MAX_RELAYS:-1000}
+      - MAX_ONE_HOP_NETWORK=${MAX_ONE_HOP_NETWORK:-50000}
+    
+    volumes:
+      - relay_data:/app/data
+      - ./templates:/app/templates:ro
+    
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3334/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    networks:
+      - wot-network
+
+  # Optional: Nginx reverse proxy for SSL termination
+  nginx:
+    image: nginx:alpine
+    container_name: wot-relay-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - wot-relay
+    networks:
+      - wot-network
+    profiles:
+      - with-nginx
+
+  # Optional: Monitoring with Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: wot-relay-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - wot-network
+    profiles:
+      - with-monitoring
+
+  # Optional: Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: wot-relay-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    depends_on:
+      - prometheus
+    networks:
+      - wot-network
+    profiles:
+      - with-monitoring
+
+volumes:
+  relay_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+networks:
+  wot-network:
+    driver: bridge

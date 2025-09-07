@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"io"
@@ -28,6 +29,166 @@ import (
 var (
 	version string
 )
+
+// LogLevel represents the logging level
+type LogLevel int
+
+const (
+	DEBUG LogLevel = iota
+	INFO
+	WARN
+	ERROR
+)
+
+// Logger provides structured logging
+type Logger struct {
+	level LogLevel
+}
+
+var logger *Logger
+
+// NewLogger creates a new logger instance
+func NewLogger(level LogLevel) *Logger {
+	return &Logger{level: level}
+}
+
+// Log writes a structured log entry
+func (l *Logger) Log(level LogLevel, component, message string, fields ...map[string]interface{}) {
+	if level < l.level {
+		return
+	}
+	
+	levelNames := map[LogLevel]string{
+		DEBUG: "DEBUG",
+		INFO:  "INFO",
+		WARN:  "WARN",
+		ERROR: "ERROR",
+	}
+	
+	timestamp := time.Now().Format("2006/01/02 15:04:05")
+	levelName := levelNames[level]
+	
+	var fieldStr string
+	if len(fields) > 0 {
+		if jsonBytes, err := json.Marshal(fields[0]); err == nil {
+			fieldStr = " " + string(jsonBytes)
+		}
+	}
+	
+	log.Printf("[%s] %s [%s] %s%s", timestamp, levelName, component, message, fieldStr)
+}
+
+// Debug logs a debug message
+func (l *Logger) Debug(component, message string, fields ...map[string]interface{}) {
+	l.Log(DEBUG, component, message, fields...)
+}
+
+// Info logs an info message
+func (l *Logger) Info(component, message string, fields ...map[string]interface{}) {
+	l.Log(INFO, component, message, fields...)
+}
+
+// Warn logs a warning message
+func (l *Logger) Warn(component, message string, fields ...map[string]interface{}) {
+	l.Log(WARN, component, message, fields...)
+}
+
+// Error logs an error message
+func (l *Logger) Error(component, message string, fields ...map[string]interface{}) {
+	l.Log(ERROR, component, message, fields...)
+}
+
+// Metrics tracks application metrics
+type Metrics struct {
+	StartTime           time.Time
+	LastWoTRefresh      time.Time
+	LastProfileRefresh  time.Time
+	LastArchiving       time.Time
+	TotalEvents         int64
+	TrustedEvents       int64
+	UntrustedEvents     int64
+	NetworkSize         int64
+	ActiveConnections   int64
+	ProcessingQueueSize int64
+	ErrorCount          int64
+	LastError           time.Time
+	LastErrorMsg        string
+	mutex               sync.RWMutex
+}
+
+var metrics *Metrics
+
+// NewMetrics creates a new metrics instance
+func NewMetrics() *Metrics {
+	return &Metrics{
+		StartTime: time.Now(),
+	}
+}
+
+// UpdateLastWoTRefresh updates the last WoT refresh time
+func (m *Metrics) UpdateLastWoTRefresh() {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	m.LastWoTRefresh = time.Now()
+}
+
+// UpdateLastProfileRefresh updates the last profile refresh time
+func (m *Metrics) UpdateLastProfileRefresh() {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	m.LastProfileRefresh = time.Now()
+}
+
+// UpdateLastArchiving updates the last archiving time
+func (m *Metrics) UpdateLastArchiving() {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	m.LastArchiving = time.Now()
+}
+
+// RecordError records an error
+func (m *Metrics) RecordError(err error) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	m.ErrorCount++
+	m.LastError = time.Now()
+	m.LastErrorMsg = err.Error()
+}
+
+// UpdateNetworkSize updates the network size
+func (m *Metrics) UpdateNetworkSize(size int) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	m.NetworkSize = int64(size)
+}
+
+// UpdateProcessingQueueSize updates the processing queue size
+func (m *Metrics) UpdateProcessingQueueSize(size int) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	m.ProcessingQueueSize = int64(size)
+}
+
+// GetMetrics returns a copy of current metrics
+func (m *Metrics) GetMetrics() Metrics {
+	m.mutex.RLock()
+	defer m.mutex.RUnlock()
+	return Metrics{
+		StartTime:           m.StartTime,
+		LastWoTRefresh:      m.LastWoTRefresh,
+		LastProfileRefresh:  m.LastProfileRefresh,
+		LastArchiving:       m.LastArchiving,
+		TotalEvents:         atomic.LoadInt64(&m.TotalEvents),
+		TrustedEvents:       atomic.LoadInt64(&m.TrustedEvents),
+		UntrustedEvents:     atomic.LoadInt64(&m.UntrustedEvents),
+		NetworkSize:         m.NetworkSize,
+		ActiveConnections:   atomic.LoadInt64(&m.ActiveConnections),
+		ProcessingQueueSize: m.ProcessingQueueSize,
+		ErrorCount:          atomic.LoadInt64(&m.ErrorCount),
+		LastError:           m.LastError,
+		LastErrorMsg:        m.LastErrorMsg,
+	}
+}
 
 type Config struct {
 	RelayName         string
@@ -253,7 +414,16 @@ func main() {
 	`
 
 	fmt.Println(green + art + reset)
-	log.Println("🚀 booting up web of trust relay")
+	
+	// Initialize logger and metrics
+	logLevel := INFO
+	if os.Getenv("LOG_LEVEL") == "DEBUG" {
+		logLevel = DEBUG
+	}
+	logger = NewLogger(logLevel)
+	metrics = NewMetrics()
+	
+	logger.Info("MAIN", "Booting up web of trust relay")
 	relay := khatru.NewRelay()
 	ctx, cancel := context.WithCancel(context.Background())
 	pool = nostr.NewSimplePool(ctx)
@@ -377,9 +547,128 @@ func main() {
 		}
 		err := indexTemplate.Execute(w, data)
 		if err != nil {
-			log.Printf("Template execution error: %v", err)
+			logger.Error("WEB", "Template execution error", map[string]interface{}{"error": err.Error()})
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		}
+	})
+
+	// Health check endpoint
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		
+		health := map[string]interface{}{
+			"status":    "healthy",
+			"timestamp": time.Now().Unix(),
+			"uptime":    time.Since(metrics.StartTime).Seconds(),
+		}
+		
+		// Check if any critical processes are stuck
+		now := time.Now()
+		if !metrics.LastWoTRefresh.IsZero() && now.Sub(metrics.LastWoTRefresh) > time.Duration(config.RefreshInterval+1)*time.Hour {
+			health["status"] = "unhealthy"
+			health["issues"] = []string{"WoT refresh is overdue"}
+		}
+		
+		if !metrics.LastProfileRefresh.IsZero() && now.Sub(metrics.LastProfileRefresh) > time.Duration(config.RefreshInterval+1)*time.Hour {
+			health["status"] = "unhealthy"
+			if issues, ok := health["issues"].([]string); ok {
+				health["issues"] = append(issues, "Profile refresh is overdue")
+			} else {
+				health["issues"] = []string{"Profile refresh is overdue"}
+			}
+		}
+		
+		// Check processing queue
+		if metrics.ProcessingQueueSize > 10000 {
+			health["status"] = "degraded"
+			if issues, ok := health["issues"].([]string); ok {
+				health["issues"] = append(issues, "Processing queue is overloaded")
+			} else {
+				health["issues"] = []string{"Processing queue is overloaded"}
+			}
+		}
+		
+		statusCode := http.StatusOK
+		if health["status"] == "unhealthy" {
+			statusCode = http.StatusServiceUnavailable
+		} else if health["status"] == "degraded" {
+			statusCode = http.StatusOK // Still OK but with warnings
+		}
+		
+		w.WriteHeader(statusCode)
+		json.NewEncoder(w).Encode(health)
+	})
+
+	// Stats endpoint
+	mux.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		
+		currentMetrics := metrics.GetMetrics()
+		
+		// Get runtime stats
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+		
+		// Get goroutine count
+		goroutines := runtime.NumGoroutine()
+		
+		// Get database stats if available
+		var dbStats map[string]interface{}
+		if wdb != nil {
+			if db, ok := wdb.(*eventstore.RelayWrapper); ok {
+				if sqliteDB, ok := db.Store.(*sqlite3.SQLite3Backend); ok {
+					stats := sqliteDB.Stats()
+					dbStats = map[string]interface{}{
+						"open_connections": stats.OpenConnections,
+						"in_use":          stats.InUse,
+						"idle":            stats.Idle,
+						"wait_count":      stats.WaitCount,
+					}
+				}
+			}
+		}
+		
+		stats := map[string]interface{}{
+			"relay": map[string]interface{}{
+				"name":        config.RelayName,
+				"pubkey":      config.RelayPubkey,
+				"description": config.RelayDescription,
+				"version":     version,
+			},
+			"uptime": map[string]interface{}{
+				"start_time": currentMetrics.StartTime,
+				"duration":   time.Since(currentMetrics.StartTime).Seconds(),
+			},
+			"network": map[string]interface{}{
+				"size":                currentMetrics.NetworkSize,
+				"last_wot_refresh":    currentMetrics.LastWoTRefresh,
+				"last_profile_refresh": currentMetrics.LastProfileRefresh,
+				"last_archiving":      currentMetrics.LastArchiving,
+			},
+			"events": map[string]interface{}{
+				"total":         currentMetrics.TotalEvents,
+				"trusted":       currentMetrics.TrustedEvents,
+				"untrusted":     currentMetrics.UntrustedEvents,
+				"processing_queue": currentMetrics.ProcessingQueueSize,
+			},
+			"system": map[string]interface{}{
+				"goroutines":     goroutines,
+				"memory_mb":      m.Alloc / 1024 / 1024,
+				"gc_runs":        m.NumGC,
+				"active_connections": currentMetrics.ActiveConnections,
+			},
+			"errors": map[string]interface{}{
+				"count":      currentMetrics.ErrorCount,
+				"last_error": currentMetrics.LastError,
+				"last_error_msg": currentMetrics.LastErrorMsg,
+			},
+		}
+		
+		if dbStats != nil {
+			stats["database"] = dbStats
+		}
+		
+		json.NewEncoder(w).Encode(stats)
 	})
 
 	// Create server with graceful shutdown
@@ -389,10 +678,16 @@ func main() {
 	}
 
 	go func() {
-		log.Println("🎉 relay running on port :3334")
+		logger.Info("SERVER", "Relay server started", map[string]interface{}{
+			"port": ":3334",
+			"version": version,
+		})
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal(err)
-		}
+			logger.Error("SERVER", "Server failed to start", map[string]interface{}{
+				"error": err.Error(),
+			})
+		log.Fatal(err)
+	}
 	}()
 
 	// Graceful shutdown handling
@@ -400,23 +695,23 @@ func main() {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	<-sigChan
 
-	log.Println("🛑 shutting down gracefully...")
+	logger.Info("SHUTDOWN", "Initiating graceful shutdown")
 
 	// Cancel the main context to stop all background processes
 	cancel()
 
 	// Give background processes a moment to finish gracefully
-	log.Println("🛑 waiting for background processes to finish...")
+	logger.Info("SHUTDOWN", "Waiting for background processes to finish")
 	time.Sleep(2 * time.Second)
 
 	// Stop processors first
 	if eventProcessor != nil {
-		log.Println("🛑 stopping event processor...")
+		logger.Info("SHUTDOWN", "Stopping event processor")
 		eventProcessor.Stop()
 	}
 
 	if batchProcessor != nil {
-		log.Println("🛑 stopping batch processor...")
+		logger.Info("SHUTDOWN", "Stopping batch processor")
 		batchProcessor.Stop()
 	}
 
@@ -424,38 +719,50 @@ func main() {
 	defer cancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("Server shutdown error: %v", err)
+		logger.Error("SHUTDOWN", "Server shutdown error", map[string]interface{}{
+			"error": err.Error(),
+		})
 	}
-	log.Println("✅ server stopped")
+	logger.Info("SHUTDOWN", "Server stopped successfully")
 }
 
 func monitorResources() {
 	for {
 		func() {
 			var m runtime.MemStats
-			log.Printf("Number of Goroutines: %d", runtime.NumGoroutine())
+			goroutines := runtime.NumGoroutine()
 			runtime.ReadMemStats(&m)
-			log.Printf("Alloc = %v MiB, Sys = %v MiB, NumGC = %v",
-				m.Alloc/1024/1024,
-				m.Sys/1024/1024,
-				m.NumGC)
 
 			trustNetworkMutex.RLock()
 			networkSize := len(trustNetworkMap)
 			trustNetworkMutex.RUnlock()
 
-			log.Printf("🫂 network size: %d, trusted notes: %d, untrusted notes: %d",
-				networkSize,
-				atomic.LoadInt64(&trustedNotes),
-				atomic.LoadInt64(&untrustedNotes))
+			// Update processing queue size
+			queueSize := len(eventProcessor.eventChan)
+			metrics.UpdateProcessingQueueSize(queueSize)
+
+			logger.Info("MONITOR", "System status", map[string]interface{}{
+				"goroutines": goroutines,
+				"memory_alloc_mb": m.Alloc/1024/1024,
+				"memory_sys_mb": m.Sys/1024/1024,
+				"gc_runs": m.NumGC,
+				"network_size": networkSize,
+				"trusted_notes": atomic.LoadInt64(&trustedNotes),
+				"untrusted_notes": atomic.LoadInt64(&untrustedNotes),
+				"processing_queue_size": queueSize,
+			})
 
 			// Database performance monitoring
 			if wdb != nil {
 				if db, ok := wdb.(*eventstore.RelayWrapper); ok {
 					if sqliteDB, ok := db.Store.(*sqlite3.SQLite3Backend); ok {
 						stats := sqliteDB.Stats()
-						log.Printf("📊 DB connections: open=%d, inUse=%d, idle=%d, waitCount=%d",
-							stats.OpenConnections, stats.InUse, stats.Idle, stats.WaitCount)
+						logger.Info("MONITOR", "Database connections", map[string]interface{}{
+							"open_connections": stats.OpenConnections,
+							"in_use": stats.InUse,
+							"idle": stats.Idle,
+							"wait_count": stats.WaitCount,
+						})
 					}
 				}
 			}
@@ -464,11 +771,15 @@ func monitorResources() {
 			if memoryMonitor != nil {
 				exceeded, message := memoryMonitor.CheckMemory()
 				if exceeded {
-					log.Printf("🚨 %s", message)
+					logger.Error("MONITOR", "Memory limit exceeded", map[string]interface{}{
+						"message": message,
+					})
 					// Force garbage collection when memory limit exceeded
 					runtime.GC()
 				} else if message != "" {
-					log.Printf("⚠️ %s", message)
+					logger.Warn("MONITOR", "Memory warning", map[string]interface{}{
+						"message": message,
+					})
 				}
 			}
 		}()
@@ -484,7 +795,7 @@ func LoadConfig() Config {
 	}
 
 	refreshInterval, _ := strconv.Atoi(os.Getenv("REFRESH_INTERVAL_HOURS"))
-	log.Println("🔄 refresh interval set to", refreshInterval, "hours")
+	logger.Info("CONFIG", "Refresh interval configured", map[string]interface{}{"hours": refreshInterval})
 
 	if os.Getenv("MINIMUM_FOLLOWERS") == "" {
 		os.Setenv("MINIMUM_FOLLOWERS", "1")
@@ -537,6 +848,10 @@ func LoadConfig() Config {
 
 	if os.Getenv("PROFILE_MAX_AGE_DAYS") == "" {
 		os.Setenv("PROFILE_MAX_AGE_DAYS", "30")
+	}
+
+	if os.Getenv("LOG_LEVEL") == "" {
+		os.Setenv("LOG_LEVEL", "INFO")
 	}
 
 	minimumFollowers, _ := strconv.Atoi(os.Getenv("MINIMUM_FOLLOWERS"))
@@ -597,7 +912,8 @@ func updateTrustNetworkFilter(pubkeyFollowerCount map[string]int) {
 }
 
 func refreshProfiles(ctx context.Context) {
-	log.Println("👤 refreshing profiles")
+	logger.Info("PROFILES", "Starting profile refresh")
+	startTime := time.Now()
 
 	trustNetworkMutex.RLock()
 	trustNetwork := make([]string, 0, len(trustNetworkMap))
@@ -609,7 +925,10 @@ func refreshProfiles(ctx context.Context) {
 	// Find pubkeys that need profile refresh (missing profiles only)
 	pubkeysToRefresh := make([]string, 0)
 
-	log.Printf("👤 checking %d profiles for refresh (missing profiles only)", len(trustNetwork))
+	logger.Info("PROFILES", "Checking profiles for refresh", map[string]interface{}{
+		"total_profiles": len(trustNetwork),
+		"check_type": "missing_only",
+	})
 
 	for _, pubkey := range trustNetwork {
 		// Check if profile exists at all
@@ -639,17 +958,27 @@ func refreshProfiles(ctx context.Context) {
 		}
 	}
 
-	log.Printf("👤 found %d profiles that need refresh (out of %d total)", len(pubkeysToRefresh), len(trustNetwork))
+	logger.Info("PROFILES", "Profile refresh analysis complete", map[string]interface{}{
+		"profiles_to_refresh": len(pubkeysToRefresh),
+		"total_profiles": len(trustNetwork),
+		"refresh_percentage": float64(len(pubkeysToRefresh)) / float64(len(trustNetwork)) * 100,
+	})
 
 	if len(pubkeysToRefresh) == 0 {
-		log.Println("👤 all profiles are up to date")
+		logger.Info("PROFILES", "All profiles are up to date")
+		metrics.UpdateLastProfileRefresh()
 		return
 	}
 
 	// Refresh only the profiles that need updating
 	stepSize := 200
 	for i := 0; i < len(pubkeysToRefresh); i += stepSize {
-		log.Printf("👤 refreshing profiles from %d to %d of %d", i, i+stepSize, len(pubkeysToRefresh))
+		logger.Info("PROFILES", "Refreshing profile batch", map[string]interface{}{
+			"batch_start": i,
+			"batch_end": i+stepSize,
+			"total_profiles": len(pubkeysToRefresh),
+			"progress_percentage": float64(i) / float64(len(pubkeysToRefresh)) * 100,
+		})
 
 		// force cancel context every time
 		func() {
@@ -671,7 +1000,14 @@ func refreshProfiles(ctx context.Context) {
 			}
 		}()
 	}
-	log.Printf("👤 profiles refreshed: %d out of %d total", len(pubkeysToRefresh), len(trustNetwork))
+	
+	duration := time.Since(startTime)
+	logger.Info("PROFILES", "Profile refresh completed", map[string]interface{}{
+		"profiles_refreshed": len(pubkeysToRefresh),
+		"total_profiles": len(trustNetwork),
+		"duration_seconds": duration.Seconds(),
+	})
+	metrics.UpdateLastProfileRefresh()
 }
 
 func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
@@ -682,9 +1018,9 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 		// initializes with seed pubkey
 		newPubkeyFollowerCount[config.RelayPubkey]++
 
-		log.Println("🌐 building web of trust graph")
+		logger.Info("WOT", "Building web of trust graph", map[string]interface{}{"depth": wotDepth})
 		for j := 0; j < wotDepth; j++ {
-			log.Println("🌐 WoT depth", j)
+			logger.Info("WOT", "Processing WoT depth", map[string]interface{}{"depth": j, "total_depth": wotDepth})
 			oneHopNetwork := make([]string, 0)
 			for pubkey := range newPubkeyFollowerCount {
 				if _, exists := lastPubkeyFollowerCount[pubkey]; !exists {
@@ -702,7 +1038,12 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 
 			stepSize := 300
 			for i := 0; i < len(oneHopNetwork); i += stepSize {
-				log.Println("🌐 fetching followers from", i, "to", i+stepSize, "of", len(oneHopNetwork))
+				logger.Info("WOT", "Fetching followers batch", map[string]interface{}{
+					"batch_start": i,
+					"batch_end": i+stepSize,
+					"total_network": len(oneHopNetwork),
+					"depth": j,
+				})
 
 				end := i + stepSize
 				if end > len(oneHopNetwork) {
@@ -720,17 +1061,17 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 					for ev := range pool.SubManyEose(timeout, seedRelays, filters) {
 						for _, contact := range ev.Event.Tags {
 							if len(contact) > 0 && contact[0] == "p" {
-								if len(contact) > 1 && len(contact[1]) == 64 {
-									pubkey := contact[1]
-									if isIgnored(pubkey, config.IgnoredPubkeys) {
-										fmt.Println("ignoring follows from pubkey: ", pubkey)
-										continue
-									}
-									if !isValidPubkey(pubkey) {
-										fmt.Println("invalid pubkey in follows: ", pubkey)
-										continue
-									}
-									newPubkeyFollowerCount[pubkey]++ // Increment follower count for the pubkey
+							if len(contact) > 1 && len(contact[1]) == 64 {
+								pubkey := contact[1]
+								if isIgnored(pubkey, config.IgnoredPubkeys) {
+									fmt.Println("ignoring follows from pubkey: ", pubkey)
+									continue
+								}
+								if !isValidPubkey(pubkey) {
+									fmt.Println("invalid pubkey in follows: ", pubkey)
+									continue
+								}
+								newPubkeyFollowerCount[pubkey]++ // Increment follower count for the pubkey
 								}
 							}
 						}
@@ -742,7 +1083,12 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 				}()
 			}
 		}
-		log.Println("🫂  total network size:", len(newPubkeyFollowerCount))
+		logger.Info("WOT", "Web of trust graph completed", map[string]interface{}{
+			"total_network_size": len(newPubkeyFollowerCount),
+			"depth": wotDepth,
+		})
+		metrics.UpdateLastWoTRefresh()
+		metrics.UpdateNetworkSize(len(newPubkeyFollowerCount))
 		return newPubkeyFollowerCount
 	}
 
@@ -755,18 +1101,67 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 	archivingCompleted := false
 
 	for {
+		cycleStart := time.Now()
+		
+		// WoT refresh with timeout detection
+		wotCtx, wotCancel := context.WithTimeout(ctx, time.Duration(config.RefreshInterval)*time.Hour/2)
+		func() {
+			defer wotCancel()
 		updateTrustNetworkFilter(runTrustNetworkRefresh(config.WoTDepth))
+		}()
+		
+		// Check if WoT refresh timed out
+		if wotCtx.Err() == context.DeadlineExceeded {
+			logger.Error("MAIN", "WoT refresh timed out", map[string]interface{}{
+				"timeout_minutes": config.RefreshInterval * 30,
+			})
+			metrics.RecordError(fmt.Errorf("WoT refresh timed out"))
+		}
+		
+		// Profile refresh with timeout detection
+		profileCtx, profileCancel := context.WithTimeout(ctx, 30*time.Minute)
+		func() {
+			defer profileCancel()
+			refreshProfiles(profileCtx)
+		}()
+		
+		// Check if profile refresh timed out
+		if profileCtx.Err() == context.DeadlineExceeded {
+			logger.Error("MAIN", "Profile refresh timed out", map[string]interface{}{
+				"timeout_minutes": 30,
+			})
+			metrics.RecordError(fmt.Errorf("Profile refresh timed out"))
+		}
+		
+		// Cleanup old notes
 		deleteOldNotes(relay)
-		refreshProfiles(ctx)
 
 		// Run archiving only once, after the first full WoT network is built and profiles are refreshed
 		if !archivingCompleted {
-			archiveTrustedNotes(ctx, relay)
+			archiveCtx, archiveCancel := context.WithTimeout(ctx, 2*time.Hour)
+			func() {
+				defer archiveCancel()
+				archiveTrustedNotes(archiveCtx, relay)
+			}()
+			
+			// Check if archiving timed out
+			if archiveCtx.Err() == context.DeadlineExceeded {
+				logger.Error("MAIN", "Archiving timed out", map[string]interface{}{
+					"timeout_minutes": 120,
+				})
+				metrics.RecordError(fmt.Errorf("Archiving timed out"))
+			}
+			
 			archivingCompleted = true
 		}
 
+		cycleDuration := time.Since(cycleStart)
+		logger.Info("MAIN", "Web of trust refresh cycle completed", map[string]interface{}{
+			"next_refresh_hours": config.RefreshInterval,
+			"cycle_duration_minutes": cycleDuration.Minutes(),
+		})
+		
 		// Wait for the configured refresh interval before next cycle
-		log.Printf("🔄 web of trust will refresh in %d hours", config.RefreshInterval)
 		time.Sleep(time.Duration(config.RefreshInterval) * time.Hour)
 	}
 }
@@ -781,7 +1176,9 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 		defer close(done)
 		if config.ArchivalSync {
 			// Run archiving first, then profile refresh sequentially
-			log.Println("📦 starting archiving process...")
+			logger.Info("ARCHIVE", "Starting archiving process", map[string]interface{}{
+				"max_days": config.ArchiveMaxDays,
+			})
 
 			var filters []nostr.Filter
 			if config.ArchiveReactions {
@@ -857,8 +1254,8 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 
 					for ev := range pool.SubManyEose(timeout, seedRelays, []nostr.Filter{kindFilter}) {
 						// Use worker pool instead of creating unlimited goroutines
-						select {
-						case <-timeout.Done():
+				select {
+				case <-timeout.Done():
 							log.Printf("📦 timeout reached, stopping pagination for kind %d", kind)
 							goto nextKind
 						case <-ctx.Done():
@@ -917,13 +1314,15 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 			nextKind:
 			}
 
-			log.Printf("📦 pagination completed: %d total events across all kinds", totalEvents)
+			logger.Info("ARCHIVE", "Pagination completed", map[string]interface{}{
+				"total_events": totalEvents,
+			})
 
-			log.Printf("📦 archived %d trusted notes and discarded %d untrusted notes",
-				atomic.LoadInt64(&trustedNotes),
-				atomic.LoadInt64(&untrustedNotes))
-
-			log.Println("📦 archiving completed")
+			logger.Info("ARCHIVE", "Archiving process completed", map[string]interface{}{
+				"trusted_notes": atomic.LoadInt64(&trustedNotes),
+				"untrusted_notes": atomic.LoadInt64(&untrustedNotes),
+			})
+			metrics.UpdateLastArchiving()
 		} else {
 			log.Println("🔄 web of trust will refresh in", config.RefreshInterval, "hours")
 			<-timeout.Done()
@@ -947,9 +1346,12 @@ func archiveEvent(ctx context.Context, relay *khatru.Relay, ev nostr.Event) {
 		wdb.Publish(ctx, ev)
 		relay.BroadcastEvent(&ev)
 		atomic.AddInt64(&trustedNotes, 1)
+		atomic.AddInt64(&metrics.TrustedEvents, 1)
 	} else {
 		atomic.AddInt64(&untrustedNotes, 1)
+		atomic.AddInt64(&metrics.UntrustedEvents, 1)
 	}
+	atomic.AddInt64(&metrics.TotalEvents, 1)
 }
 
 func deleteOldNotes(relay *khatru.Relay) error {
