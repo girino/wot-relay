@@ -30,23 +30,24 @@ var (
 )
 
 type Config struct {
-	RelayName        string
-	RelayPubkey      string
-	RelayDescription string
-	DBPath           string
-	RelayURL         string
-	IndexPath        string
-	StaticPath       string
-	RefreshInterval  int
-	MinimumFollowers int
-	ArchivalSync     bool
-	RelayContact     string
-	RelayIcon        string
-	MaxAgeDays       int
-	ArchiveReactions bool
-	ArchiveMaxDays   int
-	IgnoredPubkeys   []string
-	WoTDepth         int
+	RelayName         string
+	RelayPubkey       string
+	RelayDescription  string
+	DBPath            string
+	RelayURL          string
+	IndexPath         string
+	StaticPath        string
+	RefreshInterval   int
+	MinimumFollowers  int
+	ArchivalSync      bool
+	RelayContact      string
+	RelayIcon         string
+	MaxAgeDays        int
+	ArchiveReactions  bool
+	ArchiveMaxDays    int
+	IgnoredPubkeys    []string
+	WoTDepth          int
+	ProfileMaxAgeDays int
 }
 
 var pool *nostr.SimplePool
@@ -183,7 +184,7 @@ type EventProcessor struct {
 func NewEventProcessor(workerCount int) *EventProcessor {
 	return &EventProcessor{
 		workerCount: workerCount,
-		eventChan:   make(chan nostr.Event, workerCount*20), // Buffer for 20x worker count
+		eventChan:   make(chan nostr.Event, workerCount*50), // Buffer for 50x worker count
 		quit:        make(chan struct{}),
 	}
 }
@@ -200,7 +201,11 @@ func (ep *EventProcessor) worker(ctx context.Context, relay *khatru.Relay) {
 
 	for {
 		select {
-		case event := <-ep.eventChan:
+		case event, ok := <-ep.eventChan:
+			if !ok {
+				// Channel is closed, exit gracefully
+				return
+			}
 			archiveEvent(ctx, relay, event)
 		case <-ep.quit:
 			return
@@ -211,17 +216,20 @@ func (ep *EventProcessor) worker(ctx context.Context, relay *khatru.Relay) {
 }
 
 func (ep *EventProcessor) ProcessEvent(event nostr.Event) {
+	// Block until we can send the event - don't drop any events
+	// Check if channel is closed to avoid panic
 	select {
 	case ep.eventChan <- event:
-		// Event queued successfully
-	default:
-		// Channel is full, drop event to prevent memory buildup
-		log.Printf("Warning: Event processing queue full, dropping event %s", event.ID)
+		// Event sent successfully
+	case <-ep.quit:
+		// Processor is shutting down, drop the event
+		return
 	}
 }
 
 func (ep *EventProcessor) Stop() {
 	close(ep.quit)
+	close(ep.eventChan) // Close the event channel to unblock workers
 	ep.wg.Wait()
 }
 
@@ -247,7 +255,7 @@ func main() {
 	fmt.Println(green + art + reset)
 	log.Println("🚀 booting up web of trust relay")
 	relay := khatru.NewRelay()
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
 	pool = nostr.NewSimplePool(ctx)
 	config = LoadConfig()
 
@@ -314,31 +322,31 @@ func main() {
 	})
 
 	seedRelays = []string{
+		"wss://relay.primal.net",
 		"wss://relay.damus.io",
 		"wss://nos.lol",
-		// "wss://relay.nostr.band",
-		// "wss://eden.nostr.land",
-		// "wss://nostr.oxtr.dev/",
 		"wss://wot.utxo.one/",
-		// "wss://nostr.mom",
+		// "wss://relay.snort.social",
+		// "wss://wot.girino.org",
+		// "wss://nostr.girino.org",
+		// "wss://relay.nostr.band",
+		// "wss://eden.nostr.land", // Known to have issues with large batches
+		// "wss://nostr.oxtr.dev/",
+		"wss://nostr.mom",
 		// "wss://purplepag.es",
 		// "wss://purplerelay.com",
-		"wss://relay.snort.social",
 		// "wss://relayable.org",
-		"wss://relay.primal.net",
 		// "wss://relay.nostr.bg",
 		// "wss://no.str.cr",
 		// "wss://nostr21.com",
 		// "wss://nostrue.com",
 		// "wss://relay.siamstr.com",
-		"wss://wot.girino.org",
-		"wss://nostr.girino.org",
-		"wss://haven.girino.org/outbox",
-		"wss://haven.girino.org/inbox",
+		// "wss://haven.girino.org/outbox",
+		// "wss://haven.girino.org/inbox",
 	}
 
 	// Initialize performance components
-	eventProcessor = NewEventProcessor(1000) // 1000 workers for event processing
+	eventProcessor = NewEventProcessor(2000) // 2000 workers for event processing
 	eventProcessor.Start(ctx, relay)
 
 	batchProcessor = NewBatchProcessor(50, 1*time.Second) // Batch 50 events or wait 1 second
@@ -393,6 +401,13 @@ func main() {
 	<-sigChan
 
 	log.Println("🛑 shutting down gracefully...")
+
+	// Cancel the main context to stop all background processes
+	cancel()
+
+	// Give background processes a moment to finish gracefully
+	log.Println("🛑 waiting for background processes to finish...")
+	time.Sleep(2 * time.Second)
 
 	// Stop processors first
 	if eventProcessor != nil {
@@ -516,29 +531,39 @@ func LoadConfig() Config {
 		os.Setenv("WOT_DEPTH", "2")
 	}
 
+	if os.Getenv("ARCHIVE_MAX_DAYS") == "" {
+		os.Setenv("ARCHIVE_MAX_DAYS", "15")
+	}
+
+	if os.Getenv("PROFILE_MAX_AGE_DAYS") == "" {
+		os.Setenv("PROFILE_MAX_AGE_DAYS", "30")
+	}
+
 	minimumFollowers, _ := strconv.Atoi(os.Getenv("MINIMUM_FOLLOWERS"))
 	maxAgeDays, _ := strconv.Atoi(os.Getenv("MAX_AGE_DAYS"))
 	archiveMaxDays, _ := strconv.Atoi(os.Getenv("ARCHIVE_MAX_DAYS"))
+	profileMaxAgeDays, _ := strconv.Atoi(os.Getenv("PROFILE_MAX_AGE_DAYS"))
 	woTDepth, _ := strconv.Atoi(os.Getenv("WOT_DEPTH"))
 
 	config := Config{
-		RelayName:        getEnv("RELAY_NAME"),
-		RelayPubkey:      getEnv("RELAY_PUBKEY"),
-		RelayDescription: getEnv("RELAY_DESCRIPTION"),
-		RelayContact:     getEnv("RELAY_CONTACT"),
-		RelayIcon:        getEnv("RELAY_ICON"),
-		DBPath:           getEnv("DB_PATH"),
-		RelayURL:         getEnv("RELAY_URL"),
-		IndexPath:        getEnv("INDEX_PATH"),
-		StaticPath:       getEnv("STATIC_PATH"),
-		RefreshInterval:  refreshInterval,
-		MinimumFollowers: minimumFollowers,
-		ArchivalSync:     getEnv("ARCHIVAL_SYNC") == "TRUE",
-		MaxAgeDays:       maxAgeDays,
-		ArchiveReactions: getEnv("ARCHIVE_REACTIONS") == "TRUE",
-		ArchiveMaxDays:   archiveMaxDays,
-		IgnoredPubkeys:   ignoredPubkeys,
-		WoTDepth:         woTDepth,
+		RelayName:         getEnv("RELAY_NAME"),
+		RelayPubkey:       getEnv("RELAY_PUBKEY"),
+		RelayDescription:  getEnv("RELAY_DESCRIPTION"),
+		RelayContact:      getEnv("RELAY_CONTACT"),
+		RelayIcon:         getEnv("RELAY_ICON"),
+		DBPath:            getEnv("DB_PATH"),
+		RelayURL:          getEnv("RELAY_URL"),
+		IndexPath:         getEnv("INDEX_PATH"),
+		StaticPath:        getEnv("STATIC_PATH"),
+		RefreshInterval:   refreshInterval,
+		MinimumFollowers:  minimumFollowers,
+		ArchivalSync:      getEnv("ARCHIVAL_SYNC") == "TRUE",
+		MaxAgeDays:        maxAgeDays,
+		ArchiveReactions:  getEnv("ARCHIVE_REACTIONS") == "TRUE",
+		ArchiveMaxDays:    archiveMaxDays,
+		IgnoredPubkeys:    ignoredPubkeys,
+		WoTDepth:          woTDepth,
+		ProfileMaxAgeDays: profileMaxAgeDays,
 	}
 
 	return config
@@ -581,31 +606,72 @@ func refreshProfiles(ctx context.Context) {
 	}
 	trustNetworkMutex.RUnlock()
 
+	// Find pubkeys that need profile refresh (missing profiles only)
+	pubkeysToRefresh := make([]string, 0)
+
+	log.Printf("👤 checking %d profiles for refresh (missing profiles only)", len(trustNetwork))
+
+	for _, pubkey := range trustNetwork {
+		// Check if profile exists at all
+		needsRefresh := true
+
+		// Query for existing profile
+		filter := nostr.Filter{
+			Authors: []string{pubkey},
+			Kinds:   []int{nostr.KindProfileMetadata},
+			Limit:   1,
+		}
+
+		// Quick check with short timeout
+		checkCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+		ch, err := wdb.QueryEvents(checkCtx, filter)
+		if err == nil {
+			for range ch {
+				// If we found any profile, we don't need to refresh
+				needsRefresh = false
+				break
+			}
+		}
+		cancel()
+
+		if needsRefresh {
+			pubkeysToRefresh = append(pubkeysToRefresh, pubkey)
+		}
+	}
+
+	log.Printf("👤 found %d profiles that need refresh (out of %d total)", len(pubkeysToRefresh), len(trustNetwork))
+
+	if len(pubkeysToRefresh) == 0 {
+		log.Println("👤 all profiles are up to date")
+		return
+	}
+
+	// Refresh only the profiles that need updating
 	stepSize := 200
-	for i := 0; i < len(trustNetwork); i += stepSize {
-		log.Println("👤 refreshing profiles from", i, "to", i+stepSize, "of", len(trustNetwork))
+	for i := 0; i < len(pubkeysToRefresh); i += stepSize {
+		log.Printf("👤 refreshing profiles from %d to %d of %d", i, i+stepSize, len(pubkeysToRefresh))
 
 		// force cancel context every time
 		func() {
 			timeout, cancel := context.WithTimeout(ctx, 4*time.Second)
 			defer cancel()
 
-			end := i + 200
-			if end > len(trustNetwork) {
-				end = len(trustNetwork)
+			end := i + stepSize
+			if end > len(pubkeysToRefresh) {
+				end = len(pubkeysToRefresh)
 			}
 
 			filters := []nostr.Filter{{
-				Authors: trustNetwork[i:end],
+				Authors: pubkeysToRefresh[i:end],
 				Kinds:   []int{nostr.KindProfileMetadata},
 			}}
 
-			for ev := range pool.FetchMany(timeout, seedRelays, filters[0]) {
+			for ev := range pool.SubManyEose(timeout, seedRelays, filters) {
 				wdb.Publish(ctx, *ev.Event)
 			}
 		}()
 	}
-	log.Println("👤 profiles refreshed: ", len(trustNetwork))
+	log.Printf("👤 profiles refreshed: %d out of %d total", len(pubkeysToRefresh), len(trustNetwork))
 }
 
 func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
@@ -651,7 +717,7 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 				func() { // avoid "too many concurrent reqs" error
 					timeout, cancel := context.WithTimeout(ctx, 5*time.Second)
 					defer cancel()
-					for ev := range pool.FetchMany(timeout, seedRelays, filters[0]) {
+					for ev := range pool.SubManyEose(timeout, seedRelays, filters) {
 						for _, contact := range ev.Event.Tags {
 							if len(contact) > 0 && contact[0] == "p" {
 								if len(contact) > 1 && len(contact[1]) == 64 {
@@ -686,10 +752,18 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 		updateTrustNetworkFilter(runTrustNetworkRefresh(2))
 	}
 
+	archivingCompleted := false
+
 	for {
 		updateTrustNetworkFilter(runTrustNetworkRefresh(config.WoTDepth))
 		deleteOldNotes(relay)
-		archiveTrustedNotes(ctx, relay)
+		refreshProfiles(ctx)
+
+		// Run archiving only once, after the first full WoT network is built and profiles are refreshed
+		if !archivingCompleted {
+			archiveTrustedNotes(ctx, relay)
+			archivingCompleted = true
+		}
 
 		// Wait for the configured refresh interval before next cycle
 		log.Printf("🔄 web of trust will refresh in %d hours", config.RefreshInterval)
@@ -713,6 +787,7 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 			if config.ArchiveReactions {
 				filters = []nostr.Filter{{
 					Kinds: []int{
+						nostr.KindTextNote,
 						nostr.KindArticle,
 						nostr.KindDeletion,
 						nostr.KindEncryptedDirectMessage,
@@ -721,12 +796,15 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 						nostr.KindRepost,
 						nostr.KindZapRequest,
 						nostr.KindZap,
-						nostr.KindTextNote,
+						nostr.KindProfileMetadata,
+						nostr.KindRelayListMetadata,
+						nostr.KindFollowList,
 					},
 				}}
 			} else {
 				filters = []nostr.Filter{{
 					Kinds: []int{
+						nostr.KindTextNote,
 						nostr.KindArticle,
 						nostr.KindDeletion,
 						nostr.KindEncryptedDirectMessage,
@@ -734,7 +812,9 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 						nostr.KindRepost,
 						nostr.KindZapRequest,
 						nostr.KindZap,
-						nostr.KindTextNote,
+						nostr.KindProfileMetadata,
+						nostr.KindRelayListMetadata,
+						nostr.KindFollowList,
 					},
 				}}
 			}
@@ -744,17 +824,17 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 			// Paginate through historical events (configurable max days)
 			archiveMaxDays := config.ArchiveMaxDays
 			if archiveMaxDays <= 0 {
-				archiveMaxDays = 90 // Default to 90 days (3 months)
+				archiveMaxDays = 15 // Default to 15 days
 			}
 			maxArchiveTime := nostr.Now() - (nostr.Timestamp(archiveMaxDays) * 24 * 60 * 60)
 
 			// Process each event kind separately for better pagination control
 			totalEvents := 0
 			seenEvents := make(map[string]bool, 1000) // Global deduplication cache
-			
+
 			for _, kind := range filters[0].Kinds {
 				log.Printf("📦 processing kind %d events", kind)
-				
+
 				// Use nak-style pagination for this specific kind
 				until := nostr.Now()
 				limit := 500 // Reasonable limit per request
@@ -774,12 +854,15 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 
 					pageEvents := 0
 					hasNewEvents := false
-					
-					for ev := range pool.FetchMany(timeout, seedRelays, kindFilter) {
+
+					for ev := range pool.SubManyEose(timeout, seedRelays, []nostr.Filter{kindFilter}) {
 						// Use worker pool instead of creating unlimited goroutines
 						select {
 						case <-timeout.Done():
 							log.Printf("📦 timeout reached, stopping pagination for kind %d", kind)
+							goto nextKind
+						case <-ctx.Done():
+							log.Printf("📦 context cancelled, stopping pagination for kind %d", kind)
 							goto nextKind
 						default:
 							// Deduplicate events globally
@@ -787,7 +870,7 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 								continue
 							}
 							seenEvents[ev.Event.ID] = true
-							
+
 							eventProcessor.ProcessEvent(*ev.Event)
 							pageEvents++
 							kindEvents++
@@ -801,7 +884,7 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 						}
 					}
 
-					log.Printf("📦 kind %d, page %d: processed %d events (kind total: %d, overall total: %d)", 
+					log.Printf("📦 kind %d, page %d: processed %d events (kind total: %d, overall total: %d)",
 						kind, pageCount, pageEvents, kindEvents, totalEvents)
 
 					// Stop only when page is completely empty (0 events)
@@ -827,11 +910,11 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 				}
 
 				log.Printf("📦 kind %d completed: processed %d events", kind, kindEvents)
-				
+
 				// Small delay between kinds to be nice to relays
 				time.Sleep(500 * time.Millisecond)
-				
-				nextKind:
+
+			nextKind:
 			}
 
 			log.Printf("📦 pagination completed: %d total events across all kinds", totalEvents)
@@ -840,8 +923,7 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 				atomic.LoadInt64(&trustedNotes),
 				atomic.LoadInt64(&untrustedNotes))
 
-			log.Println("📦 archiving completed, now refreshing profiles...")
-			refreshProfiles(ctx)
+			log.Println("📦 archiving completed")
 		} else {
 			log.Println("🔄 web of trust will refresh in", config.RefreshInterval, "hours")
 			<-timeout.Done()
