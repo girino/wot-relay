@@ -584,8 +584,17 @@ func main() {
 		// Get database stats if available
 		var dbStats map[string]interface{}
 		var eventStoreStats map[string]interface{}
+		logger.Info("STATS", "Starting database stats collection", map[string]interface{}{
+			"wdb_nil": wdb == nil,
+		})
 		if wdb != nil {
+			logger.Info("STATS", "wdb is not nil, attempting type assertion", map[string]interface{}{
+				"wdb_type": fmt.Sprintf("%T", wdb),
+			})
 			if db, ok := wdb.(*eventstore.RelayWrapper); ok {
+				logger.Info("STATS", "Successfully cast to RelayWrapper", map[string]interface{}{
+					"store_nil": db.Store == nil,
+				})
 				// Debug: log the actual type of db.Store
 				logger.Info("STATS", "Database store type", map[string]interface{}{
 					"store_type": fmt.Sprintf("%T", db.Store),
@@ -621,7 +630,13 @@ func main() {
 						"actual_type": fmt.Sprintf("%T", db.Store),
 					})
 				}
+			} else {
+				logger.Info("STATS", "Failed to cast wdb to RelayWrapper", map[string]interface{}{
+					"wdb_type": fmt.Sprintf("%T", wdb),
+				})
 			}
+		} else {
+			logger.Info("STATS", "wdb is nil - no database stats available")
 		}
 
 		// Get worker stats if available
