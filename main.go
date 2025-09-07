@@ -587,7 +587,7 @@ func main() {
 		if wdb != nil {
 			if db, ok := wdb.(*eventstore.RelayWrapper); ok {
 				// Debug: log the actual type of db.Store
-				logger.Debug("STATS", "Database store type", map[string]interface{}{
+				logger.Info("STATS", "Database store type", map[string]interface{}{
 					"store_type": fmt.Sprintf("%T", db.Store),
 				})
 				if profiledDB, ok := db.Store.(*ProfiledEventStore); ok {
@@ -601,7 +601,7 @@ func main() {
 						"delete_event_calls":  perfStats.DeleteEventCalls,
 						"delete_event_avg_ms": perfStats.DeleteEventDuration.Milliseconds() / max(1, perfStats.DeleteEventCalls),
 					}
-					logger.Debug("STATS", "Profiled database stats found", map[string]interface{}{
+					logger.Info("STATS", "Profiled database stats found", map[string]interface{}{
 						"save_calls":   perfStats.SaveEventCalls,
 						"query_calls":  perfStats.QueryEventsCalls,
 						"delete_calls": perfStats.DeleteEventCalls,
@@ -617,7 +617,7 @@ func main() {
 						}
 					}
 				} else {
-					logger.Debug("STATS", "Type assertion failed - not ProfiledEventStore", map[string]interface{}{
+					logger.Info("STATS", "Type assertion failed - not ProfiledEventStore", map[string]interface{}{
 						"actual_type": fmt.Sprintf("%T", db.Store),
 					})
 				}
