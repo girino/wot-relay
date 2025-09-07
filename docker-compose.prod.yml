@@ -9,46 +9,8 @@ services:
     restart: unless-stopped
     ports:
       - "3334:3334"
-    environment:
-      # Relay Configuration
-      - RELAY_NAME=${RELAY_NAME:-WoT Relay}
-      - RELAY_PUBKEY=${RELAY_PUBKEY}
-      - RELAY_DESCRIPTION=${RELAY_DESCRIPTION:-Web of Trust Relay}
-      - RELAY_URL=${RELAY_URL:-wss://relay.example.com}
-      - RELAY_CONTACT=${RELAY_CONTACT:-${RELAY_PUBKEY}}
-      - RELAY_ICON=${RELAY_ICON:-https://pfp.nostr.build/56306a93a88d4c657d8a3dfa57b55a4ed65b709eee927b5dafaab4d5330db21f.png}
-      
-      # Database Configuration
-      - DB_PATH=${DB_PATH:-/app/data/relay.db}
-      - INDEX_PATH=${INDEX_PATH:-/app/templates/index.html}
-      - STATIC_PATH=${STATIC_PATH:-/app/templates/static}
-      
-      # Performance Configuration
-      - REFRESH_INTERVAL_HOURS=${REFRESH_INTERVAL_HOURS:-3}
-      - MINIMUM_FOLLOWERS=${MINIMUM_FOLLOWERS:-1}
-      - WOT_DEPTH=${WOT_DEPTH:-2}
-      - MAX_AGE_DAYS=${MAX_AGE_DAYS:-0}
-      
-      # Archiving Configuration
-      - ARCHIVAL_SYNC=${ARCHIVAL_SYNC:-TRUE}
-      - ARCHIVE_REACTIONS=${ARCHIVE_REACTIONS:-FALSE}
-      - ARCHIVE_MAX_DAYS=${ARCHIVE_MAX_DAYS:-15}
-      - PROFILE_MAX_AGE_DAYS=${PROFILE_MAX_AGE_DAYS:-30}
-      
-      # Logging Configuration
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      
-      # Network Configuration
-      - IGNORE_FOLLOWS_LIST=${IGNORE_FOLLOWS_LIST:-}
-      
-      # Limits
-      - MAX_TRUST_NETWORK=${MAX_TRUST_NETWORK:-40000}
-      - MAX_RELAYS=${MAX_RELAYS:-1000}
-      - MAX_ONE_HOP_NETWORK=${MAX_ONE_HOP_NETWORK:-50000}
-      
-      # Watchtower Configuration
-      - WATCHTOWER_POLL_INTERVAL=${WATCHTOWER_POLL_INTERVAL:-300}
-      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+    env_file:
+      - .env
     
     volumes:
       - relay_data:/app/data
@@ -76,6 +38,9 @@ services:
         max-size: "10m"
         max-file: "3"
     
+    labels:
+      - "autoheal=true"
+    
     networks:
       - wot-network
 
@@ -92,6 +57,8 @@ services:
       - ./ssl:/etc/nginx/ssl:ro
     depends_on:
       - wot-relay
+    labels:
+      - "autoheal=true"
     networks:
       - wot-network
     profiles:
@@ -114,6 +81,8 @@ services:
       - '--web.console.templates=/etc/prometheus/consoles'
       - '--storage.tsdb.retention.time=200h'
       - '--web.enable-lifecycle'
+    labels:
+      - "autoheal=true"
     networks:
       - wot-network
     profiles:
@@ -126,45 +95,35 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+    env_file:
+      - .env
     volumes:
       - grafana_data:/var/lib/grafana
       - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
       - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
     depends_on:
       - prometheus
+    labels:
+      - "autoheal=true"
     networks:
       - wot-network
     profiles:
       - with-monitoring
 
-  # Watchtower for automatic container updates and health monitoring
-  watchtower:
-    image: containrrr/watchtower:latest
-    container_name: wot-relay-watchtower
+  # Autoheal for health monitoring and restarting unhealthy containers
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: wot-relay-autoheal
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    env_file:
+      - .env
     environment:
-      - WATCHTOWER_POLL_INTERVAL=${WATCHTOWER_POLL_INTERVAL:-300}
-      - WATCHTOWER_CLEANUP=true
-      - WATCHTOWER_INCLUDE_STOPPED=true
-      - WATCHTOWER_REVIVE_STOPPED=true
-      - WATCHTOWER_LABEL_ENABLE=true
-      - WATCHTOWER_NOTIFICATIONS=slack
-      - WATCHTOWER_NOTIFICATION_SLACK_HOOK_URL=${SLACK_WEBHOOK_URL:-}
-      - WATCHTOWER_NOTIFICATION_SLACK_IDENTIFIER=wot-relay
-    command: >
-      --interval ${WATCHTOWER_POLL_INTERVAL:-300}
-      --cleanup
-      --include-stopped
-      --revive-stopped
-      --label-enable
-      wot-relay
-      wot-relay-nginx
-      wot-relay-prometheus
-      wot-relay-grafana
+      - AUTOHEAL_CONTAINER_LABEL=autoheal
+      - AUTOHEAL_INTERVAL=${AUTOHEAL_INTERVAL:-5}
+      - AUTOHEAL_START_PERIOD=${AUTOHEAL_START_PERIOD:-0}
+      - AUTOHEAL_DEFAULT_STOP_TIMEOUT=${AUTOHEAL_DEFAULT_STOP_TIMEOUT:-10}
     networks:
       - wot-network
     logging:
