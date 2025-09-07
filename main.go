@@ -764,7 +764,7 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 					windowStart = maxArchiveTime
 				}
 
-				log.Printf("📦 fetching time window %d (from: %d, until: %d, kinds: %v)", 
+				log.Printf("📦 fetching time window %d (from: %d, until: %d, kinds: %v)",
 					windowCount, windowStart, until, filters[0].Kinds)
 
 				// Paginate within this time window
@@ -774,7 +774,7 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 
 				for {
 					pageInWindow++
-					log.Printf("📦 window %d, page %d (from: %d, until: %d, limit: %d)", 
+					log.Printf("📦 window %d, page %d (from: %d, until: %d, limit: %d)",
 						windowCount, pageInWindow, windowStart, windowUntil, limit)
 
 					// Create filter with time window and pagination
@@ -801,15 +801,10 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 								windowUntil = ev.Event.CreatedAt
 							}
 
-							// Debug: log first few events to understand what we're getting
-							if pageEvents <= 3 {
-								log.Printf("📦 DEBUG: event %d - kind: %d, author: %s, created: %d", 
-									pageEvents, ev.Event.Kind, ev.Event.PubKey, ev.Event.CreatedAt)
-							}
 						}
 					}
 
-					log.Printf("📦 window %d, page %d: processed %d events (window total: %d, overall total: %d)", 
+					log.Printf("📦 window %d, page %d: processed %d events (window total: %d, overall total: %d)",
 						windowCount, pageInWindow, pageEvents, windowEvents, totalEvents)
 
 					// Stop if we got fewer events than the limit (no more events in this window)
