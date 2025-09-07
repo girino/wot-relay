@@ -57,24 +57,24 @@ func (l *Logger) Log(level LogLevel, component, message string, fields ...map[st
 	if level < l.level {
 		return
 	}
-	
+
 	levelNames := map[LogLevel]string{
 		DEBUG: "DEBUG",
 		INFO:  "INFO",
 		WARN:  "WARN",
 		ERROR: "ERROR",
 	}
-	
+
 	timestamp := time.Now().Format("2006/01/02 15:04:05")
 	levelName := levelNames[level]
-	
+
 	var fieldStr string
 	if len(fields) > 0 {
 		if jsonBytes, err := json.Marshal(fields[0]); err == nil {
 			fieldStr = " " + string(jsonBytes)
 		}
 	}
-	
+
 	log.Printf("[%s] %s [%s] %s%s", timestamp, levelName, component, message, fieldStr)
 }
 
@@ -414,7 +414,7 @@ func main() {
 	`
 
 	fmt.Println(green + art + reset)
-	
+
 	// Initialize logger and metrics
 	logLevel := INFO
 	if os.Getenv("LOG_LEVEL") == "DEBUG" {
@@ -422,7 +422,7 @@ func main() {
 	}
 	logger = NewLogger(logLevel)
 	metrics = NewMetrics()
-	
+
 	logger.Info("MAIN", "Booting up web of trust relay")
 	relay := khatru.NewRelay()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -555,20 +555,20 @@ func main() {
 	// Health check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		
+
 		health := map[string]interface{}{
 			"status":    "healthy",
 			"timestamp": time.Now().Unix(),
 			"uptime":    time.Since(metrics.StartTime).Seconds(),
 		}
-		
+
 		// Check if any critical processes are stuck
 		now := time.Now()
 		if !metrics.LastWoTRefresh.IsZero() && now.Sub(metrics.LastWoTRefresh) > time.Duration(config.RefreshInterval+1)*time.Hour {
 			health["status"] = "unhealthy"
 			health["issues"] = []string{"WoT refresh is overdue"}
 		}
-		
+
 		if !metrics.LastProfileRefresh.IsZero() && now.Sub(metrics.LastProfileRefresh) > time.Duration(config.RefreshInterval+1)*time.Hour {
 			health["status"] = "unhealthy"
 			if issues, ok := health["issues"].([]string); ok {
@@ -577,7 +577,7 @@ func main() {
 				health["issues"] = []string{"Profile refresh is overdue"}
 			}
 		}
-		
+
 		// Check processing queue
 		if metrics.ProcessingQueueSize > 10000 {
 			health["status"] = "degraded"
@@ -587,14 +587,14 @@ func main() {
 				health["issues"] = []string{"Processing queue is overloaded"}
 			}
 		}
-		
+
 		statusCode := http.StatusOK
 		if health["status"] == "unhealthy" {
 			statusCode = http.StatusServiceUnavailable
 		} else if health["status"] == "degraded" {
 			statusCode = http.StatusOK // Still OK but with warnings
 		}
-		
+
 		w.WriteHeader(statusCode)
 		json.NewEncoder(w).Encode(health)
 	})
@@ -602,16 +602,16 @@ func main() {
 	// Stats endpoint
 	mux.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		
+
 		currentMetrics := metrics.GetMetrics()
-		
+
 		// Get runtime stats
 		var m runtime.MemStats
 		runtime.ReadMemStats(&m)
-		
+
 		// Get goroutine count
 		goroutines := runtime.NumGoroutine()
-		
+
 		// Get database stats if available
 		var dbStats map[string]interface{}
 		if wdb != nil {
@@ -620,14 +620,14 @@ func main() {
 					stats := sqliteDB.Stats()
 					dbStats = map[string]interface{}{
 						"open_connections": stats.OpenConnections,
-						"in_use":          stats.InUse,
-						"idle":            stats.Idle,
-						"wait_count":      stats.WaitCount,
+						"in_use":           stats.InUse,
+						"idle":             stats.Idle,
+						"wait_count":       stats.WaitCount,
 					}
 				}
 			}
 		}
-		
+
 		stats := map[string]interface{}{
 			"relay": map[string]interface{}{
 				"name":        config.RelayName,
@@ -640,34 +640,34 @@ func main() {
 				"duration":   time.Since(currentMetrics.StartTime).Seconds(),
 			},
 			"network": map[string]interface{}{
-				"size":                currentMetrics.NetworkSize,
-				"last_wot_refresh":    currentMetrics.LastWoTRefresh,
+				"size":                 currentMetrics.NetworkSize,
+				"last_wot_refresh":     currentMetrics.LastWoTRefresh,
 				"last_profile_refresh": currentMetrics.LastProfileRefresh,
-				"last_archiving":      currentMetrics.LastArchiving,
+				"last_archiving":       currentMetrics.LastArchiving,
 			},
 			"events": map[string]interface{}{
-				"total":         currentMetrics.TotalEvents,
-				"trusted":       currentMetrics.TrustedEvents,
-				"untrusted":     currentMetrics.UntrustedEvents,
+				"total":            currentMetrics.TotalEvents,
+				"trusted":          currentMetrics.TrustedEvents,
+				"untrusted":        currentMetrics.UntrustedEvents,
 				"processing_queue": currentMetrics.ProcessingQueueSize,
 			},
 			"system": map[string]interface{}{
-				"goroutines":     goroutines,
-				"memory_mb":      m.Alloc / 1024 / 1024,
-				"gc_runs":        m.NumGC,
+				"goroutines":         goroutines,
+				"memory_mb":          m.Alloc / 1024 / 1024,
+				"gc_runs":            m.NumGC,
 				"active_connections": currentMetrics.ActiveConnections,
 			},
 			"errors": map[string]interface{}{
-				"count":      currentMetrics.ErrorCount,
-				"last_error": currentMetrics.LastError,
+				"count":          currentMetrics.ErrorCount,
+				"last_error":     currentMetrics.LastError,
 				"last_error_msg": currentMetrics.LastErrorMsg,
 			},
 		}
-		
+
 		if dbStats != nil {
 			stats["database"] = dbStats
 		}
-		
+
 		json.NewEncoder(w).Encode(stats)
 	})
 
@@ -679,15 +679,15 @@ func main() {
 
 	go func() {
 		logger.Info("SERVER", "Relay server started", map[string]interface{}{
-			"port": ":3334",
+			"port":    ":3334",
 			"version": version,
 		})
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("SERVER", "Server failed to start", map[string]interface{}{
 				"error": err.Error(),
 			})
-		log.Fatal(err)
-	}
+			log.Fatal(err)
+		}
 	}()
 
 	// Graceful shutdown handling
@@ -742,13 +742,13 @@ func monitorResources() {
 			metrics.UpdateProcessingQueueSize(queueSize)
 
 			logger.Info("MONITOR", "System status", map[string]interface{}{
-				"goroutines": goroutines,
-				"memory_alloc_mb": m.Alloc/1024/1024,
-				"memory_sys_mb": m.Sys/1024/1024,
-				"gc_runs": m.NumGC,
-				"network_size": networkSize,
-				"trusted_notes": atomic.LoadInt64(&trustedNotes),
-				"untrusted_notes": atomic.LoadInt64(&untrustedNotes),
+				"goroutines":            goroutines,
+				"memory_alloc_mb":       m.Alloc / 1024 / 1024,
+				"memory_sys_mb":         m.Sys / 1024 / 1024,
+				"gc_runs":               m.NumGC,
+				"network_size":          networkSize,
+				"trusted_notes":         atomic.LoadInt64(&trustedNotes),
+				"untrusted_notes":       atomic.LoadInt64(&untrustedNotes),
 				"processing_queue_size": queueSize,
 			})
 
@@ -759,9 +759,9 @@ func monitorResources() {
 						stats := sqliteDB.Stats()
 						logger.Info("MONITOR", "Database connections", map[string]interface{}{
 							"open_connections": stats.OpenConnections,
-							"in_use": stats.InUse,
-							"idle": stats.Idle,
-							"wait_count": stats.WaitCount,
+							"in_use":           stats.InUse,
+							"idle":             stats.Idle,
+							"wait_count":       stats.WaitCount,
 						})
 					}
 				}
@@ -927,7 +927,7 @@ func refreshProfiles(ctx context.Context) {
 
 	logger.Info("PROFILES", "Checking profiles for refresh", map[string]interface{}{
 		"total_profiles": len(trustNetwork),
-		"check_type": "missing_only",
+		"check_type":     "missing_only",
 	})
 
 	for _, pubkey := range trustNetwork {
@@ -960,8 +960,8 @@ func refreshProfiles(ctx context.Context) {
 
 	logger.Info("PROFILES", "Profile refresh analysis complete", map[string]interface{}{
 		"profiles_to_refresh": len(pubkeysToRefresh),
-		"total_profiles": len(trustNetwork),
-		"refresh_percentage": float64(len(pubkeysToRefresh)) / float64(len(trustNetwork)) * 100,
+		"total_profiles":      len(trustNetwork),
+		"refresh_percentage":  float64(len(pubkeysToRefresh)) / float64(len(trustNetwork)) * 100,
 	})
 
 	if len(pubkeysToRefresh) == 0 {
@@ -974,9 +974,9 @@ func refreshProfiles(ctx context.Context) {
 	stepSize := 200
 	for i := 0; i < len(pubkeysToRefresh); i += stepSize {
 		logger.Info("PROFILES", "Refreshing profile batch", map[string]interface{}{
-			"batch_start": i,
-			"batch_end": i+stepSize,
-			"total_profiles": len(pubkeysToRefresh),
+			"batch_start":         i,
+			"batch_end":           i + stepSize,
+			"total_profiles":      len(pubkeysToRefresh),
 			"progress_percentage": float64(i) / float64(len(pubkeysToRefresh)) * 100,
 		})
 
@@ -1000,12 +1000,12 @@ func refreshProfiles(ctx context.Context) {
 			}
 		}()
 	}
-	
+
 	duration := time.Since(startTime)
 	logger.Info("PROFILES", "Profile refresh completed", map[string]interface{}{
 		"profiles_refreshed": len(pubkeysToRefresh),
-		"total_profiles": len(trustNetwork),
-		"duration_seconds": duration.Seconds(),
+		"total_profiles":     len(trustNetwork),
+		"duration_seconds":   duration.Seconds(),
 	})
 	metrics.UpdateLastProfileRefresh()
 }
@@ -1039,10 +1039,10 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 			stepSize := 300
 			for i := 0; i < len(oneHopNetwork); i += stepSize {
 				logger.Info("WOT", "Fetching followers batch", map[string]interface{}{
-					"batch_start": i,
-					"batch_end": i+stepSize,
+					"batch_start":   i,
+					"batch_end":     i + stepSize,
 					"total_network": len(oneHopNetwork),
-					"depth": j,
+					"depth":         j,
 				})
 
 				end := i + stepSize
@@ -1061,17 +1061,17 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 					for ev := range pool.SubManyEose(timeout, seedRelays, filters) {
 						for _, contact := range ev.Event.Tags {
 							if len(contact) > 0 && contact[0] == "p" {
-							if len(contact) > 1 && len(contact[1]) == 64 {
-								pubkey := contact[1]
-								if isIgnored(pubkey, config.IgnoredPubkeys) {
-									fmt.Println("ignoring follows from pubkey: ", pubkey)
-									continue
-								}
-								if !isValidPubkey(pubkey) {
-									fmt.Println("invalid pubkey in follows: ", pubkey)
-									continue
-								}
-								newPubkeyFollowerCount[pubkey]++ // Increment follower count for the pubkey
+								if len(contact) > 1 && len(contact[1]) == 64 {
+									pubkey := contact[1]
+									if isIgnored(pubkey, config.IgnoredPubkeys) {
+										fmt.Println("ignoring follows from pubkey: ", pubkey)
+										continue
+									}
+									if !isValidPubkey(pubkey) {
+										fmt.Println("invalid pubkey in follows: ", pubkey)
+										continue
+									}
+									newPubkeyFollowerCount[pubkey]++ // Increment follower count for the pubkey
 								}
 							}
 						}
@@ -1085,7 +1085,7 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 		}
 		logger.Info("WOT", "Web of trust graph completed", map[string]interface{}{
 			"total_network_size": len(newPubkeyFollowerCount),
-			"depth": wotDepth,
+			"depth":              wotDepth,
 		})
 		metrics.UpdateLastWoTRefresh()
 		metrics.UpdateNetworkSize(len(newPubkeyFollowerCount))
@@ -1102,14 +1102,14 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 
 	for {
 		cycleStart := time.Now()
-		
+
 		// WoT refresh with timeout detection
 		wotCtx, wotCancel := context.WithTimeout(ctx, time.Duration(config.RefreshInterval)*time.Hour/2)
 		func() {
 			defer wotCancel()
-		updateTrustNetworkFilter(runTrustNetworkRefresh(config.WoTDepth))
+			updateTrustNetworkFilter(runTrustNetworkRefresh(config.WoTDepth))
 		}()
-		
+
 		// Check if WoT refresh timed out
 		if wotCtx.Err() == context.DeadlineExceeded {
 			logger.Error("MAIN", "WoT refresh timed out", map[string]interface{}{
@@ -1117,14 +1117,14 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 			})
 			metrics.RecordError(fmt.Errorf("WoT refresh timed out"))
 		}
-		
+
 		// Profile refresh with timeout detection
 		profileCtx, profileCancel := context.WithTimeout(ctx, 30*time.Minute)
 		func() {
 			defer profileCancel()
 			refreshProfiles(profileCtx)
 		}()
-		
+
 		// Check if profile refresh timed out
 		if profileCtx.Err() == context.DeadlineExceeded {
 			logger.Error("MAIN", "Profile refresh timed out", map[string]interface{}{
@@ -1132,7 +1132,7 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 			})
 			metrics.RecordError(fmt.Errorf("Profile refresh timed out"))
 		}
-		
+
 		// Cleanup old notes
 		deleteOldNotes(relay)
 
@@ -1143,7 +1143,7 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 				defer archiveCancel()
 				archiveTrustedNotes(archiveCtx, relay)
 			}()
-			
+
 			// Check if archiving timed out
 			if archiveCtx.Err() == context.DeadlineExceeded {
 				logger.Error("MAIN", "Archiving timed out", map[string]interface{}{
@@ -1151,16 +1151,16 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 				})
 				metrics.RecordError(fmt.Errorf("Archiving timed out"))
 			}
-			
+
 			archivingCompleted = true
 		}
 
 		cycleDuration := time.Since(cycleStart)
 		logger.Info("MAIN", "Web of trust refresh cycle completed", map[string]interface{}{
-			"next_refresh_hours": config.RefreshInterval,
+			"next_refresh_hours":     config.RefreshInterval,
 			"cycle_duration_minutes": cycleDuration.Minutes(),
 		})
-		
+
 		// Wait for the configured refresh interval before next cycle
 		time.Sleep(time.Duration(config.RefreshInterval) * time.Hour)
 	}
@@ -1254,8 +1254,8 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 
 					for ev := range pool.SubManyEose(timeout, seedRelays, []nostr.Filter{kindFilter}) {
 						// Use worker pool instead of creating unlimited goroutines
-				select {
-				case <-timeout.Done():
+						select {
+						case <-timeout.Done():
 							log.Printf("📦 timeout reached, stopping pagination for kind %d", kind)
 							goto nextKind
 						case <-ctx.Done():
@@ -1319,7 +1319,7 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 			})
 
 			logger.Info("ARCHIVE", "Archiving process completed", map[string]interface{}{
-				"trusted_notes": atomic.LoadInt64(&trustedNotes),
+				"trusted_notes":   atomic.LoadInt64(&trustedNotes),
 				"untrusted_notes": atomic.LoadInt64(&untrustedNotes),
 			})
 			metrics.UpdateLastArchiving()

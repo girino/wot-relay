@@ -75,7 +75,7 @@ LOG_LEVEL=INFO
 
 ### Core Services
 
-- **wot-relay**: Main relay application
+- **wot-relay**: Main relay application (includes eventstore patch for QueryKindsLimit)
 - **nginx**: Reverse proxy with SSL termination (optional)
 
 ### Monitoring Services (with-monitoring profile)
@@ -84,6 +84,16 @@ LOG_LEVEL=INFO
 - **grafana**: Metrics visualization
 
 ## 🔧 Deployment Options
+
+### Important: Eventstore Patch
+
+The Docker build automatically applies a patch to the `eventstore` library to fix the `QueryKindsLimit` issue. This patch:
+
+- Increases the default limit from 10 to 50 kinds per query
+- Uses the configured `QueryKindsLimit` value from the database configuration
+- Prevents "too many kinds" errors during WoT building and archiving
+
+The patch is applied automatically during the Docker build process.
 
 ### Basic Deployment
 ```bash

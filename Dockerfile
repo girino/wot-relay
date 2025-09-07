@@ -1,6 +1,9 @@
 # Use Golang image based on Debian Bookworm
 FROM golang:bookworm
 
+# Install patch utility
+RUN apt-get update && apt-get install -y patch && rm -rf /var/lib/apt/lists/*
+
 # Set the working directory within the container
 WORKDIR /app
 
@@ -9,6 +12,13 @@ COPY go.mod go.sum ./
 
 # Download dependencies
 RUN go mod download
+
+# Copy patch files
+COPY patches/ /app/patches/
+
+# Apply eventstore patch for QueryKindsLimit
+RUN cd $(go env GOPATH)/pkg/mod/github.com/fiatjaf/eventstore@* && \
+    patch -p1 < /app/patches/eventstore-querykindslimit.patch
 
 # Copy the rest of the application source code
 COPY . .
