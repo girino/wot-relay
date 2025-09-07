@@ -687,7 +687,7 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 		updateTrustNetworkFilter(runTrustNetworkRefresh(config.WoTDepth))
 		deleteOldNotes(relay)
 		archiveTrustedNotes(ctx, relay)
-		
+
 		// Wait for the configured refresh interval before next cycle
 		log.Printf("🔄 web of trust will refresh in %d hours", config.RefreshInterval)
 		time.Sleep(time.Duration(config.RefreshInterval) * time.Hour)
@@ -711,11 +711,9 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 					Kinds: []int{
 						nostr.KindArticle,
 						nostr.KindDeletion,
-						nostr.KindFollowList,
 						nostr.KindEncryptedDirectMessage,
 						nostr.KindMuteList,
 						nostr.KindReaction,
-						nostr.KindRelayListMetadata,
 						nostr.KindRepost,
 						nostr.KindZapRequest,
 						nostr.KindZap,
@@ -727,10 +725,8 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 					Kinds: []int{
 						nostr.KindArticle,
 						nostr.KindDeletion,
-						nostr.KindFollowList,
 						nostr.KindEncryptedDirectMessage,
 						nostr.KindMuteList,
-						nostr.KindRelayListMetadata,
 						nostr.KindRepost,
 						nostr.KindZapRequest,
 						nostr.KindZap,
@@ -741,15 +737,60 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 
 			log.Println("📦 archiving trusted notes...")
 
-			for ev := range pool.FetchMany(timeout, seedRelays, filters[0]) {
-				// Use worker pool instead of creating unlimited goroutines
-				select {
-				case <-timeout.Done():
-					return
-				default:
-					eventProcessor.ProcessEvent(*ev.Event)
+			// Paginate through historical events (last 3 months)
+			threeMonthsAgo := nostr.Now() - (90 * 24 * 60 * 60) // 90 days in seconds
+			until := nostr.Now()
+			limit := 1000 // Events per page
+			totalEvents := 0
+			pageCount := 0
+
+			for {
+				pageCount++
+				log.Printf("📦 fetching page %d (until: %d, limit: %d)", pageCount, until, limit)
+				
+				// Create filter with pagination
+				paginatedFilter := filters[0]
+				paginatedFilter.Until = &until
+				paginatedFilter.Limit = limit
+
+				pageEvents := 0
+				for ev := range pool.FetchMany(timeout, seedRelays, paginatedFilter) {
+					// Use worker pool instead of creating unlimited goroutines
+					select {
+					case <-timeout.Done():
+						log.Printf("📦 timeout reached, stopping pagination")
+						return
+					default:
+						eventProcessor.ProcessEvent(*ev.Event)
+						pageEvents++
+						totalEvents++
+						
+						// Update 'until' to the oldest event we've seen
+						if ev.Event.CreatedAt < until {
+							until = ev.Event.CreatedAt
+						}
+					}
 				}
+
+				log.Printf("📦 page %d: processed %d events (total: %d)", pageCount, pageEvents, totalEvents)
+
+				// Stop if we got fewer events than the limit (no more events)
+				if pageEvents < limit {
+					log.Printf("📦 reached end of events (got %d < %d)", pageEvents, limit)
+					break
+				}
+
+				// Stop if we've gone back too far (3 months limit)
+				if until < threeMonthsAgo {
+					log.Printf("📦 reached 3-month limit (until: %d < %d)", until, threeMonthsAgo)
+					break
+				}
+
+				// Small delay between pages to be nice to relays
+				time.Sleep(100 * time.Millisecond)
 			}
+
+			log.Printf("📦 pagination completed: %d total events across %d pages", totalEvents, pageCount)
 
 			log.Printf("📦 archived %d trusted notes and discarded %d untrusted notes",
 				atomic.LoadInt64(&trustedNotes),
