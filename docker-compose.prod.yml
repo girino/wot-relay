@@ -1,11 +1,11 @@
 version: '3.8'
 
 services:
-  wot-relay:
+  relay:
     build:
       context: .
       dockerfile: Dockerfile.prod
-    container_name: wot-relay
+    #container_name: wot-relay
     restart: unless-stopped
     ports:
       - "3334:3334"
@@ -48,7 +48,7 @@ services:
   # Optional: Nginx reverse proxy for SSL termination
   nginx:
     image: nginx:alpine
-    container_name: wot-relay-nginx
+    #container_name: wot-relay-nginx
     restart: unless-stopped
     ports:
       - "80:80"
@@ -69,7 +69,7 @@ services:
   # Autoheal for health monitoring and restarting unhealthy containers
   autoheal:
     image: willfarrell/autoheal:latest
-    container_name: wot-relay-autoheal
+    #container_name: wot-relay-autoheal
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -93,7 +93,7 @@ services:
   # Tor proxy for anonymous access
   tor:
     image: dperson/torproxy
-    container_name: wot-relay-tor
+    #container_name: wot-relay-tor
     volumes:
       - ../tor-data:/var/lib/tor
     command: >
