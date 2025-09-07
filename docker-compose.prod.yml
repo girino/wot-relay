@@ -132,6 +132,24 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Tor proxy for anonymous access
+  tor:
+    image: dperson/torproxy
+    container_name: wot-relay-tor
+    volumes:
+      - ../tor-data:/var/lib/tor
+    command: >
+      -s "80;relay:3334"
+    restart: unless-stopped
+    mem_limit: 3.5g
+    memswap_limit: 4g
+    labels:
+      - "autoheal=true"
+    networks:
+      - wot-network
+    profiles:
+      - with-tor
+
 volumes:
   relay_data:
     driver: local
