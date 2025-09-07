@@ -44,6 +44,7 @@ type Config struct {
 	RelayIcon        string
 	MaxAgeDays       int
 	ArchiveReactions bool
+	ArchiveMaxDays   int
 	IgnoredPubkeys   []string
 	WoTDepth         int
 }
@@ -517,6 +518,7 @@ func LoadConfig() Config {
 
 	minimumFollowers, _ := strconv.Atoi(os.Getenv("MINIMUM_FOLLOWERS"))
 	maxAgeDays, _ := strconv.Atoi(os.Getenv("MAX_AGE_DAYS"))
+	archiveMaxDays, _ := strconv.Atoi(os.Getenv("ARCHIVE_MAX_DAYS"))
 	woTDepth, _ := strconv.Atoi(os.Getenv("WOT_DEPTH"))
 
 	config := Config{
@@ -534,6 +536,7 @@ func LoadConfig() Config {
 		ArchivalSync:     getEnv("ARCHIVAL_SYNC") == "TRUE",
 		MaxAgeDays:       maxAgeDays,
 		ArchiveReactions: getEnv("ARCHIVE_REACTIONS") == "TRUE",
+		ArchiveMaxDays:   archiveMaxDays,
 		IgnoredPubkeys:   ignoredPubkeys,
 		WoTDepth:         woTDepth,
 	}
@@ -737,8 +740,12 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 
 			log.Println("📦 archiving trusted notes...")
 
-			// Paginate through historical events (last 3 months)
-			threeMonthsAgo := nostr.Now() - (90 * 24 * 60 * 60) // 90 days in seconds
+			// Paginate through historical events (configurable max days)
+			archiveMaxDays := config.ArchiveMaxDays
+			if archiveMaxDays <= 0 {
+				archiveMaxDays = 90 // Default to 90 days (3 months)
+			}
+			maxArchiveTime := nostr.Now() - (nostr.Timestamp(archiveMaxDays) * 24 * 60 * 60)
 			until := nostr.Now()
 			limit := 1000 // Events per page
 			totalEvents := 0
@@ -746,8 +753,8 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 
 			for {
 				pageCount++
-				log.Printf("📦 fetching page %d (until: %d, limit: %d)", pageCount, until, limit)
-				
+				log.Printf("📦 fetching page %d (until: %d, limit: %d, max days: %d)", pageCount, until, limit, archiveMaxDays)
+
 				// Create filter with pagination
 				paginatedFilter := filters[0]
 				paginatedFilter.Until = &until
@@ -764,7 +771,7 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 						eventProcessor.ProcessEvent(*ev.Event)
 						pageEvents++
 						totalEvents++
-						
+
 						// Update 'until' to the oldest event we've seen
 						if ev.Event.CreatedAt < until {
 							until = ev.Event.CreatedAt
@@ -780,9 +787,9 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 					break
 				}
 
-				// Stop if we've gone back too far (3 months limit)
-				if until < threeMonthsAgo {
-					log.Printf("📦 reached 3-month limit (until: %d < %d)", until, threeMonthsAgo)
+				// Stop if we've gone back too far (configurable limit)
+				if until < maxArchiveTime {
+					log.Printf("📦 reached %d-day limit (until: %d < %d)", archiveMaxDays, until, maxArchiveTime)
 					break
 				}
 
