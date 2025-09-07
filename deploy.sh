@@ -20,7 +20,7 @@ echo -e "${GREEN}🚀 Starting WoT Relay Production Deployment${NC}"
 # Check if .env file exists
 if [ ! -f "$ENV_FILE" ]; then
     echo -e "${YELLOW}⚠️  .env file not found. Creating from example...${NC}"
-    cp env.example "$ENV_FILE"
+    cp example.env "$ENV_FILE"
     echo -e "${RED}❌ Please edit $ENV_FILE with your configuration before running again.${NC}"
     exit 1
 fi

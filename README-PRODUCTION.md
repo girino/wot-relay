@@ -8,7 +8,7 @@ This guide covers deploying the WoT Relay in a production environment with Docke
    ```bash
    git clone https://github.com/bitvora/wot-relay.git
    cd wot-relay
-   cp env.example .env
+   cp example.env .env
    # Edit .env with your configuration
    ```
 

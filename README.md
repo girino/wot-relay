@@ -52,12 +52,12 @@ git clone https://github.com/bitvora/wot-relay.git
 cd wot-relay
 ```
 
-### 2. Copy `.env.example` to `.env`
+### 2. Copy `example.env` to `.env`
 
 You'll need to create an `.env` file based on the example provided in the repository.
 
 ```bash
-cp .env.example .env
+cp example.env .env
 ```
 
 ### 3. Set your environment variables
@@ -202,7 +202,7 @@ git clone https://github.com/bitvora/wot-relay.git
 cd wot-relay
 
 # Copy environment template
-cp env.example .env
+cp example.env .env
 
 # Edit .env with your configuration
 nano .env
