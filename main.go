@@ -511,7 +511,14 @@ func main() {
 	}
 
 	// Initialize performance components
-	eventProcessor = NewEventProcessor(2000) // 2000 workers for event processing
+	// Get worker count from environment, default to reasonable number
+	workerCount := 50 // Default to 50 workers
+	if workerCountEnv := os.Getenv("WORKER_COUNT"); workerCountEnv != "" {
+		if parsed, err := strconv.Atoi(workerCountEnv); err == nil && parsed > 0 {
+			workerCount = parsed
+		}
+	}
+	eventProcessor = NewEventProcessor(workerCount)
 	eventProcessor.Start(ctx, relay)
 
 	batchProcessor = NewBatchProcessor(50, 1*time.Second) // Batch 50 events or wait 1 second
@@ -950,10 +957,10 @@ func refreshProfiles(ctx context.Context) {
 		if (i+1)%1000 == 0 {
 			progress := float64(i+1) / float64(len(trustNetwork)) * 100
 			logger.Info("PROFILES", "Profile check progress", map[string]interface{}{
-				"checked":        i + 1,
-				"total":          len(trustNetwork),
-				"progress_pct":   progress,
-				"missing_found":  len(pubkeysToRefresh),
+				"checked":       i + 1,
+				"total":         len(trustNetwork),
+				"progress_pct":  progress,
+				"missing_found": len(pubkeysToRefresh),
 			})
 		}
 	}
