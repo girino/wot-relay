@@ -191,23 +191,23 @@ func (m *Metrics) GetMetrics() Metrics {
 }
 
 type Config struct {
-	RelayName         string
-	RelayPubkey       string
-	RelayDescription  string
-	DBPath            string
-	RelayURL          string
-	IndexPath         string
-	StaticPath        string
-	RefreshInterval   int
-	MinimumFollowers  int
-	ArchivalSync      bool
-	RelayContact      string
-	RelayIcon         string
-	MaxAgeDays        int
-	ArchiveReactions  bool
-	ArchiveMaxDays    int
-	IgnoredPubkeys    []string
-	WoTDepth          int
+	RelayName        string
+	RelayPubkey      string
+	RelayDescription string
+	DBPath           string
+	RelayURL         string
+	IndexPath        string
+	StaticPath       string
+	RefreshInterval  int
+	MinimumFollowers int
+	ArchivalSync     bool
+	RelayContact     string
+	RelayIcon        string
+	MaxAgeDays       int
+	ArchiveReactions bool
+	ArchiveMaxDays   int
+	IgnoredPubkeys   []string
+	WoTDepth         int
 }
 
 var pool *nostr.SimplePool
@@ -845,7 +845,6 @@ func LoadConfig() Config {
 		os.Setenv("ARCHIVE_MAX_DAYS", "15")
 	}
 
-
 	if os.Getenv("LOG_LEVEL") == "" {
 		os.Setenv("LOG_LEVEL", "INFO")
 	}
@@ -856,23 +855,23 @@ func LoadConfig() Config {
 	woTDepth, _ := strconv.Atoi(os.Getenv("WOT_DEPTH"))
 
 	config := Config{
-		RelayName:         getEnv("RELAY_NAME"),
-		RelayPubkey:       getEnv("RELAY_PUBKEY"),
-		RelayDescription:  getEnv("RELAY_DESCRIPTION"),
-		RelayContact:      getEnv("RELAY_CONTACT"),
-		RelayIcon:         getEnv("RELAY_ICON"),
-		DBPath:            getEnv("DB_PATH"),
-		RelayURL:          getEnv("RELAY_URL"),
-		IndexPath:         getEnv("INDEX_PATH"),
-		StaticPath:        getEnv("STATIC_PATH"),
-		RefreshInterval:   refreshInterval,
-		MinimumFollowers:  minimumFollowers,
-		ArchivalSync:      getEnv("ARCHIVAL_SYNC") == "TRUE",
-		MaxAgeDays:        maxAgeDays,
-		ArchiveReactions:  getEnv("ARCHIVE_REACTIONS") == "TRUE",
-		ArchiveMaxDays:    archiveMaxDays,
-		IgnoredPubkeys:    ignoredPubkeys,
-		WoTDepth:          woTDepth,
+		RelayName:        getEnv("RELAY_NAME"),
+		RelayPubkey:      getEnv("RELAY_PUBKEY"),
+		RelayDescription: getEnv("RELAY_DESCRIPTION"),
+		RelayContact:     getEnv("RELAY_CONTACT"),
+		RelayIcon:        getEnv("RELAY_ICON"),
+		DBPath:           getEnv("DB_PATH"),
+		RelayURL:         getEnv("RELAY_URL"),
+		IndexPath:        getEnv("INDEX_PATH"),
+		StaticPath:       getEnv("STATIC_PATH"),
+		RefreshInterval:  refreshInterval,
+		MinimumFollowers: minimumFollowers,
+		ArchivalSync:     getEnv("ARCHIVAL_SYNC") == "TRUE",
+		MaxAgeDays:       maxAgeDays,
+		ArchiveReactions: getEnv("ARCHIVE_REACTIONS") == "TRUE",
+		ArchiveMaxDays:   archiveMaxDays,
+		IgnoredPubkeys:   ignoredPubkeys,
+		WoTDepth:         woTDepth,
 	}
 
 	return config
