@@ -490,28 +490,24 @@ func main() {
 		return false, ""
 	})
 
-	seedRelays = []string{
-		"wss://relay.primal.net",
-		"wss://relay.damus.io",
-		"wss://nos.lol",
-		"wss://wot.utxo.one/",
-		// "wss://relay.snort.social",
-		// "wss://wot.girino.org",
-		// "wss://nostr.girino.org",
-		// "wss://relay.nostr.band",
-		// "wss://eden.nostr.land", // Known to have issues with large batches
-		// "wss://nostr.oxtr.dev/",
-		"wss://nostr.mom",
-		// "wss://purplepag.es",
-		// "wss://purplerelay.com",
-		// "wss://relayable.org",
-		// "wss://relay.nostr.bg",
-		// "wss://no.str.cr",
-		// "wss://nostr21.com",
-		// "wss://nostrue.com",
-		// "wss://relay.siamstr.com",
-		// "wss://haven.girino.org/outbox",
-		// "wss://haven.girino.org/inbox",
+	// Initialize seed relays from environment variable
+	seedRelaysEnv := getEnv("SEED_RELAYS")
+	if seedRelaysEnv == "" {
+		// Default seed relays if not configured
+		seedRelays = []string{
+			"wss://relay.primal.net",
+			"wss://relay.damus.io",
+			"wss://nos.lol",
+			"wss://wot.utxo.one/",
+			"wss://nostr.mom",
+		}
+	} else {
+		// Parse comma-separated relay URLs from environment
+		seedRelays = strings.Split(seedRelaysEnv, ",")
+		// Trim whitespace from each relay URL
+		for i, relay := range seedRelays {
+			seedRelays[i] = strings.TrimSpace(relay)
+		}
 	}
 
 	// Initialize performance components
