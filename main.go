@@ -753,11 +753,11 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 			limit := 500 // Reasonable limit per request
 			totalEvents := 0
 			pageCount := 0
-			
+
 			// Deduplication cache like nak uses
 			seenEvents := make(map[string]bool, 1000)
 
-			log.Printf("📦 starting nak-style pagination (until: %d, limit: %d, kinds: %v)", 
+			log.Printf("📦 starting nak-style pagination (until: %d, limit: %d, kinds: %v)",
 				until, limit, filters[0].Kinds)
 
 			for {
@@ -771,7 +771,7 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 
 				pageEvents := 0
 				hasNewEvents := false
-				
+
 				for ev := range pool.FetchMany(timeout, seedRelays, paginatedFilter) {
 					// Use worker pool instead of creating unlimited goroutines
 					select {
@@ -784,7 +784,7 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 							continue
 						}
 						seenEvents[ev.Event.ID] = true
-						
+
 						eventProcessor.ProcessEvent(*ev.Event)
 						pageEvents++
 						totalEvents++
@@ -799,9 +799,9 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 
 				log.Printf("📦 page %d: processed %d events (total: %d)", pageCount, pageEvents, totalEvents)
 
-				// Stop if we got fewer events than the limit (no more events)
-				if pageEvents < limit {
-					log.Printf("📦 completed: got %d < %d events", pageEvents, limit)
+				// Stop only when page is completely empty (0 events)
+				if pageEvents == 0 {
+					log.Printf("📦 completed: got 0 events (page empty)")
 					break
 				}
 
