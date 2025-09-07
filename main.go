@@ -748,91 +748,80 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 			}
 			maxArchiveTime := nostr.Now() - (nostr.Timestamp(archiveMaxDays) * 24 * 60 * 60)
 
-			// Use smaller time windows to get more comprehensive coverage
-			const timeWindowHours = 24 // 24-hour windows
-			timeWindowSeconds := nostr.Timestamp(timeWindowHours * 60 * 60)
-
+			// Use nak-style pagination: start from now and go backwards until no more events
 			until := nostr.Now()
-			limit := 500 // Smaller limit to avoid relay restrictions
+			limit := 500 // Reasonable limit per request
 			totalEvents := 0
-			windowCount := 0
+			pageCount := 0
+			
+			// Deduplication cache like nak uses
+			seenEvents := make(map[string]bool, 1000)
 
-			for until > maxArchiveTime {
-				windowCount++
-				windowStart := until - timeWindowSeconds
-				if windowStart < maxArchiveTime {
-					windowStart = maxArchiveTime
-				}
+			log.Printf("📦 starting nak-style pagination (until: %d, limit: %d, kinds: %v)", 
+				until, limit, filters[0].Kinds)
 
-				log.Printf("📦 fetching time window %d (from: %d, until: %d, kinds: %v)",
-					windowCount, windowStart, until, filters[0].Kinds)
+			for {
+				pageCount++
+				log.Printf("📦 page %d (until: %d, limit: %d)", pageCount, until, limit)
 
-				// Paginate within this time window
-				windowUntil := until
-				windowEvents := 0
-				pageInWindow := 0
+				// Create filter with pagination
+				paginatedFilter := filters[0]
+				paginatedFilter.Until = &until
+				paginatedFilter.Limit = limit
 
-				for {
-					pageInWindow++
-					log.Printf("📦 window %d, page %d (from: %d, until: %d, limit: %d)",
-						windowCount, pageInWindow, windowStart, windowUntil, limit)
+				pageEvents := 0
+				hasNewEvents := false
+				
+				for ev := range pool.FetchMany(timeout, seedRelays, paginatedFilter) {
+					// Use worker pool instead of creating unlimited goroutines
+					select {
+					case <-timeout.Done():
+						log.Printf("📦 timeout reached, stopping pagination")
+						return
+					default:
+						// Deduplicate events like nak does
+						if seenEvents[ev.Event.ID] {
+							continue
+						}
+						seenEvents[ev.Event.ID] = true
+						
+						eventProcessor.ProcessEvent(*ev.Event)
+						pageEvents++
+						totalEvents++
+						hasNewEvents = true
 
-					// Create filter with time window and pagination
-					windowFilter := filters[0]
-					windowFilter.Since = &windowStart
-					windowFilter.Until = &windowUntil
-					windowFilter.Limit = limit
-
-					pageEvents := 0
-					for ev := range pool.FetchMany(timeout, seedRelays, windowFilter) {
-						// Use worker pool instead of creating unlimited goroutines
-						select {
-						case <-timeout.Done():
-							log.Printf("📦 timeout reached, stopping pagination")
-							return
-						default:
-							eventProcessor.ProcessEvent(*ev.Event)
-							pageEvents++
-							windowEvents++
-							totalEvents++
-
-							// Update until timestamp for next page
-							if ev.Event.CreatedAt < windowUntil {
-								windowUntil = ev.Event.CreatedAt
-							}
-
+						// Update until timestamp for next page (like nak does)
+						if ev.Event.CreatedAt < until {
+							until = ev.Event.CreatedAt
 						}
 					}
-
-					log.Printf("📦 window %d, page %d: processed %d events (window total: %d, overall total: %d)",
-						windowCount, pageInWindow, pageEvents, windowEvents, totalEvents)
-
-					// Stop if we got fewer events than the limit (no more events in this window)
-					if pageEvents < limit {
-						log.Printf("📦 window %d completed: got %d < %d events", windowCount, pageEvents, limit)
-						break
-					}
-
-					// Stop if we've gone back too far within this window
-					if windowUntil <= windowStart {
-						log.Printf("📦 window %d completed: reached window start", windowCount)
-						break
-					}
-
-					// Small delay between pages within the same window
-					time.Sleep(100 * time.Millisecond)
 				}
 
-				log.Printf("📦 window %d completed: processed %d events (total: %d)", windowCount, windowEvents, totalEvents)
+				log.Printf("📦 page %d: processed %d events (total: %d)", pageCount, pageEvents, totalEvents)
 
-				// Move to next time window
-				until = windowStart
+				// Stop if we got fewer events than the limit (no more events)
+				if pageEvents < limit {
+					log.Printf("📦 completed: got %d < %d events", pageEvents, limit)
+					break
+				}
 
-				// Small delay between windows to be nice to relays
+				// Stop if we've gone back too far (configurable limit)
+				if until < maxArchiveTime {
+					log.Printf("📦 reached %d-day limit (until: %d < %d)", archiveMaxDays, until, maxArchiveTime)
+					break
+				}
+
+				// Stop if no new events were found (like nak does)
+				if !hasNewEvents {
+					log.Printf("📦 completed: no new events found")
+					break
+				}
+
+				// Small delay between pages to be nice to relays
 				time.Sleep(200 * time.Millisecond)
 			}
 
-			log.Printf("📦 pagination completed: %d total events across %d time windows", totalEvents, windowCount)
+			log.Printf("📦 pagination completed: %d total events across %d pages", totalEvents, pageCount)
 
 			log.Printf("📦 archived %d trusted notes and discarded %d untrusted notes",
 				atomic.LoadInt64(&trustedNotes),
