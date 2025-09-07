@@ -349,7 +349,7 @@ func NewEventProcessor(workerCount int) *EventProcessor {
 			workerMultiplier = parsed
 		}
 	}
-	
+
 	return &EventProcessor{
 		workerCount: workerCount,
 		eventChan:   make(chan nostr.Event, workerCount*workerMultiplier), // Buffer for Nx worker count
@@ -519,8 +519,8 @@ func main() {
 	}
 
 	// Initialize performance components
-	// Get worker count from environment, default to reasonable number
-	workerCount := 50 // Default to 50 workers
+	// Get worker count from environment, default to 2 per processor
+	workerCount := runtime.NumCPU() * 2 // Default to 2 workers per CPU core
 	if workerCountEnv := os.Getenv("WORKER_COUNT"); workerCountEnv != "" {
 		if parsed, err := strconv.Atoi(workerCountEnv); err == nil && parsed > 0 {
 			workerCount = parsed
