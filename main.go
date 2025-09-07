@@ -228,7 +228,6 @@ var trustNetworkMap map[string]bool
 var trustNetworkMutex sync.RWMutex
 var trustedNotes int64
 var untrustedNotes int64
-var archiveEventSemaphore = make(chan struct{}, 500) // Limit concurrent goroutines (increased from 100)
 var indexTemplate *template.Template
 var eventProcessor *EventProcessor
 var memoryMonitor *MemoryMonitor
@@ -473,7 +472,6 @@ func main() {
 	}
 	eventProcessor = NewEventProcessor(workerCount)
 	eventProcessor.Start(ctx, relay)
-
 
 	memoryMonitor = NewMemoryMonitor(1024) // 1GB memory limit
 
