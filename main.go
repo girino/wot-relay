@@ -748,80 +748,93 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 			}
 			maxArchiveTime := nostr.Now() - (nostr.Timestamp(archiveMaxDays) * 24 * 60 * 60)
 
-			// Use nak-style pagination: start from now and go backwards until no more events
-			until := nostr.Now()
-			limit := 500 // Reasonable limit per request
+			// Process each event kind separately for better pagination control
 			totalEvents := 0
-			pageCount := 0
+			seenEvents := make(map[string]bool, 1000) // Global deduplication cache
+			
+			for _, kind := range filters[0].Kinds {
+				log.Printf("📦 processing kind %d events", kind)
+				
+				// Use nak-style pagination for this specific kind
+				until := nostr.Now()
+				limit := 500 // Reasonable limit per request
+				kindEvents := 0
+				pageCount := 0
 
-			// Deduplication cache like nak uses
-			seenEvents := make(map[string]bool, 1000)
+				for {
+					pageCount++
+					log.Printf("📦 kind %d, page %d (until: %d, limit: %d)", kind, pageCount, until, limit)
 
-			log.Printf("📦 starting nak-style pagination (until: %d, limit: %d, kinds: %v)",
-				until, limit, filters[0].Kinds)
+					// Create filter for this specific kind
+					kindFilter := nostr.Filter{
+						Kinds: []int{kind},
+						Until: &until,
+						Limit: limit,
+					}
 
-			for {
-				pageCount++
-				log.Printf("📦 page %d (until: %d, limit: %d)", pageCount, until, limit)
+					pageEvents := 0
+					hasNewEvents := false
+					
+					for ev := range pool.FetchMany(timeout, seedRelays, kindFilter) {
+						// Use worker pool instead of creating unlimited goroutines
+						select {
+						case <-timeout.Done():
+							log.Printf("📦 timeout reached, stopping pagination for kind %d", kind)
+							goto nextKind
+						default:
+							// Deduplicate events globally
+							if seenEvents[ev.Event.ID] {
+								continue
+							}
+							seenEvents[ev.Event.ID] = true
+							
+							eventProcessor.ProcessEvent(*ev.Event)
+							pageEvents++
+							kindEvents++
+							totalEvents++
+							hasNewEvents = true
 
-				// Create filter with pagination
-				paginatedFilter := filters[0]
-				paginatedFilter.Until = &until
-				paginatedFilter.Limit = limit
-
-				pageEvents := 0
-				hasNewEvents := false
-
-				for ev := range pool.FetchMany(timeout, seedRelays, paginatedFilter) {
-					// Use worker pool instead of creating unlimited goroutines
-					select {
-					case <-timeout.Done():
-						log.Printf("📦 timeout reached, stopping pagination")
-						return
-					default:
-						// Deduplicate events like nak does
-						if seenEvents[ev.Event.ID] {
-							continue
-						}
-						seenEvents[ev.Event.ID] = true
-
-						eventProcessor.ProcessEvent(*ev.Event)
-						pageEvents++
-						totalEvents++
-						hasNewEvents = true
-
-						// Update until timestamp for next page (like nak does)
-						if ev.Event.CreatedAt < until {
-							until = ev.Event.CreatedAt
+							// Update until timestamp for next page
+							if ev.Event.CreatedAt < until {
+								until = ev.Event.CreatedAt
+							}
 						}
 					}
+
+					log.Printf("📦 kind %d, page %d: processed %d events (kind total: %d, overall total: %d)", 
+						kind, pageCount, pageEvents, kindEvents, totalEvents)
+
+					// Stop only when page is completely empty (0 events)
+					if pageEvents == 0 {
+						log.Printf("📦 kind %d completed: got 0 events (page empty)", kind)
+						break
+					}
+
+					// Stop if we've gone back too far (configurable limit)
+					if until < maxArchiveTime {
+						log.Printf("📦 kind %d reached %d-day limit (until: %d < %d)", kind, archiveMaxDays, until, maxArchiveTime)
+						break
+					}
+
+					// Stop if no new events were found
+					if !hasNewEvents {
+						log.Printf("📦 kind %d completed: no new events found", kind)
+						break
+					}
+
+					// Small delay between pages to be nice to relays
+					time.Sleep(200 * time.Millisecond)
 				}
 
-				log.Printf("📦 page %d: processed %d events (total: %d)", pageCount, pageEvents, totalEvents)
-
-				// Stop only when page is completely empty (0 events)
-				if pageEvents == 0 {
-					log.Printf("📦 completed: got 0 events (page empty)")
-					break
-				}
-
-				// Stop if we've gone back too far (configurable limit)
-				if until < maxArchiveTime {
-					log.Printf("📦 reached %d-day limit (until: %d < %d)", archiveMaxDays, until, maxArchiveTime)
-					break
-				}
-
-				// Stop if no new events were found (like nak does)
-				if !hasNewEvents {
-					log.Printf("📦 completed: no new events found")
-					break
-				}
-
-				// Small delay between pages to be nice to relays
-				time.Sleep(200 * time.Millisecond)
+				log.Printf("📦 kind %d completed: processed %d events", kind, kindEvents)
+				
+				// Small delay between kinds to be nice to relays
+				time.Sleep(500 * time.Millisecond)
+				
+				nextKind:
 			}
 
-			log.Printf("📦 pagination completed: %d total events across %d pages", totalEvents, pageCount)
+			log.Printf("📦 pagination completed: %d total events across all kinds", totalEvents)
 
 			log.Printf("📦 archived %d trusted notes and discarded %d untrusted notes",
 				atomic.LoadInt64(&trustedNotes),
