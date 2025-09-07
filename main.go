@@ -339,6 +339,7 @@ type EventProcessor struct {
 	eventChan   chan nostr.Event
 	quit        chan struct{}
 	wg          sync.WaitGroup
+	busyWorkers int64 // Atomic counter for busy workers
 }
 
 func NewEventProcessor(workerCount int) *EventProcessor {
@@ -374,7 +375,11 @@ func (ep *EventProcessor) worker(ctx context.Context, relay *khatru.Relay) {
 				// Channel is closed, exit gracefully
 				return
 			}
+			// Mark worker as busy
+			atomic.AddInt64(&ep.busyWorkers, 1)
 			archiveEvent(ctx, relay, event)
+			// Mark worker as idle
+			atomic.AddInt64(&ep.busyWorkers, -1)
 		case <-ep.quit:
 			return
 		case <-ctx.Done():
@@ -399,6 +404,17 @@ func (ep *EventProcessor) Stop() {
 	close(ep.quit)
 	close(ep.eventChan) // Close the event channel to unblock workers
 	ep.wg.Wait()
+}
+
+func (ep *EventProcessor) GetWorkerStats() map[string]interface{} {
+	busyWorkers := atomic.LoadInt64(&ep.busyWorkers)
+	return map[string]interface{}{
+		"total_workers": ep.workerCount,
+		"busy_workers":  busyWorkers,
+		"idle_workers":  ep.workerCount - int(busyWorkers),
+		"queue_size":    len(ep.eventChan),
+		"queue_capacity": cap(ep.eventChan),
+	}
 }
 
 func main() {
@@ -638,6 +654,12 @@ func main() {
 			}
 		}
 
+		// Get worker stats if available
+		var workerStats map[string]interface{}
+		if eventProcessor != nil {
+			workerStats = eventProcessor.GetWorkerStats()
+		}
+
 		stats := map[string]interface{}{
 			"relay": map[string]interface{}{
 				"name":        config.RelayName,
@@ -672,6 +694,10 @@ func main() {
 				"last_error":     currentMetrics.LastError,
 				"last_error_msg": currentMetrics.LastErrorMsg,
 			},
+		}
+
+		if workerStats != nil {
+			stats["workers"] = workerStats
 		}
 
 		if dbStats != nil {
