@@ -210,9 +210,17 @@ type Config struct {
 	WoTDepth         int
 }
 
-var pool *nostr.SimplePool
+// Remove persistent pool - we'll create connections on-demand
 var wdb nostr.RelayStore
 var config Config
+
+// createTemporaryPool creates a temporary pool for a specific operation
+func createTemporaryPool(ctx context.Context) *nostr.SimplePool {
+	logger.Debug("RELAY", "Creating temporary relay pool", map[string]interface{}{
+		"seed_relays": len(seedRelays),
+	})
+	return nostr.NewSimplePool(ctx)
+}
 
 // var trustNetwork []string
 var seedRelays []string
@@ -221,6 +229,7 @@ var trustNetworkMutex sync.RWMutex
 var trustedNotes int64
 var untrustedNotes int64
 var archiveEventSemaphore = make(chan struct{}, 500) // Limit concurrent goroutines (increased from 100)
+var relayConnectionSemaphore chan struct{}           // Will be initialized in main()
 var indexTemplate *template.Template
 var eventProcessor *EventProcessor
 var memoryMonitor *MemoryMonitor
@@ -371,7 +380,6 @@ func main() {
 	logger.Info("MAIN", "Booting up web of trust relay")
 	relay := khatru.NewRelay()
 	ctx, cancel := context.WithCancel(context.Background())
-	pool = nostr.NewSimplePool(ctx)
 	config = LoadConfig()
 
 	// Initialize template once at startup
@@ -440,12 +448,12 @@ func main() {
 	seedRelaysEnv := getEnv("SEED_RELAYS")
 	if seedRelaysEnv == "" {
 		// Default seed relays if not configured
-		seedRelays = []string{
+	seedRelays = []string{
 			"wss://relay.primal.net",
-			"wss://relay.damus.io",
-			"wss://nos.lol",
-			"wss://wot.utxo.one/",
-			"wss://nostr.mom",
+		"wss://relay.damus.io",
+		"wss://nos.lol",
+		"wss://wot.utxo.one/",
+		"wss://nostr.mom",
 		}
 	} else {
 		// Parse comma-separated relay URLs from environment
@@ -466,6 +474,15 @@ func main() {
 	}
 	eventProcessor = NewEventProcessor(workerCount)
 	eventProcessor.Start(ctx, relay)
+
+	// Initialize relay connection semaphore
+	relayConnectionLimit := 3
+	if limitEnv := os.Getenv("RELAY_CONNECTION_LIMIT"); limitEnv != "" {
+		if parsed, err := strconv.Atoi(limitEnv); err == nil && parsed > 0 {
+			relayConnectionLimit = parsed
+		}
+	}
+	relayConnectionSemaphore = make(chan struct{}, relayConnectionLimit)
 
 	memoryMonitor = NewMemoryMonitor(1024) // 1GB memory limit
 
@@ -557,6 +574,14 @@ func main() {
 		// Get goroutine count
 		goroutines := runtime.NumGoroutine()
 
+		// Warn if goroutine count is high
+		if goroutines > 100 {
+			logger.Warn("SYSTEM", "High goroutine count detected", map[string]interface{}{
+				"goroutines": goroutines,
+				"threshold":  100,
+			})
+		}
+
 		// Get database stats if available
 		var dbStats map[string]interface{}
 		if wdb != nil {
@@ -641,8 +666,8 @@ func main() {
 			logger.Error("SERVER", "Server failed to start", map[string]interface{}{
 				"error": err.Error(),
 			})
-			log.Fatal(err)
-		}
+		log.Fatal(err)
+	}
 	}()
 
 	// Graceful shutdown handling
@@ -950,7 +975,10 @@ func refreshProfiles(ctx context.Context) {
 				Kinds:   []int{nostr.KindProfileMetadata},
 			}}
 
-			for ev := range pool.SubManyEose(timeout, seedRelays, filters) {
+			// Create temporary pool for this operation
+			tempPool := createTemporaryPool(ctx)
+			
+			for ev := range tempPool.SubManyEose(timeout, seedRelays, filters) {
 				wdb.Publish(ctx, *ev.Event)
 			}
 		}()
@@ -1013,20 +1041,23 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 				func() { // avoid "too many concurrent reqs" error
 					timeout, cancel := context.WithTimeout(ctx, 5*time.Second)
 					defer cancel()
-					for ev := range pool.SubManyEose(timeout, seedRelays, filters) {
+					// Create temporary pool for this operation
+					tempPool := createTemporaryPool(ctx)
+					
+					for ev := range tempPool.SubManyEose(timeout, seedRelays, filters) {
 						for _, contact := range ev.Event.Tags {
 							if len(contact) > 0 && contact[0] == "p" {
-								if len(contact) > 1 && len(contact[1]) == 64 {
-									pubkey := contact[1]
-									if isIgnored(pubkey, config.IgnoredPubkeys) {
-										fmt.Println("ignoring follows from pubkey: ", pubkey)
-										continue
-									}
-									if !isValidPubkey(pubkey) {
-										fmt.Println("invalid pubkey in follows: ", pubkey)
-										continue
-									}
-									newPubkeyFollowerCount[pubkey]++ // Increment follower count for the pubkey
+							if len(contact) > 1 && len(contact[1]) == 64 {
+								pubkey := contact[1]
+								if isIgnored(pubkey, config.IgnoredPubkeys) {
+									fmt.Println("ignoring follows from pubkey: ", pubkey)
+									continue
+								}
+								if !isValidPubkey(pubkey) {
+									fmt.Println("invalid pubkey in follows: ", pubkey)
+									continue
+								}
+								newPubkeyFollowerCount[pubkey]++ // Increment follower count for the pubkey
 								}
 							}
 						}
@@ -1062,7 +1093,7 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 		wotCtx, wotCancel := context.WithTimeout(ctx, time.Duration(config.RefreshInterval)*time.Hour/2)
 		func() {
 			defer wotCancel()
-			updateTrustNetworkFilter(runTrustNetworkRefresh(config.WoTDepth))
+		updateTrustNetworkFilter(runTrustNetworkRefresh(config.WoTDepth))
 		}()
 
 		// Check if WoT refresh timed out
@@ -1207,10 +1238,17 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 					pageEvents := 0
 					hasNewEvents := false
 
-					for ev := range pool.SubManyEose(timeout, seedRelays, []nostr.Filter{kindFilter}) {
+					// Limit concurrent relay connections
+					relayConnectionSemaphore <- struct{}{}
+					defer func() { <-relayConnectionSemaphore }()
+
+					// Create temporary pool for this operation
+					tempPool := createTemporaryPool(ctx)
+					
+					for ev := range tempPool.SubManyEose(timeout, seedRelays, []nostr.Filter{kindFilter}) {
 						// Use worker pool instead of creating unlimited goroutines
-						select {
-						case <-timeout.Done():
+				select {
+				case <-timeout.Done():
 							log.Printf("📦 timeout reached, stopping pagination for kind %d", kind)
 							goto nextKind
 						case <-ctx.Done():
