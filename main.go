@@ -706,7 +706,8 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 	go func() {
 		defer close(done)
 		if config.ArchivalSync {
-			go refreshProfiles(ctx)
+			// Run archiving first, then profile refresh sequentially
+			log.Println("📦 starting archiving process...")
 
 			var filters []nostr.Filter
 			if config.ArchiveReactions {
@@ -746,22 +747,34 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 				archiveMaxDays = 90 // Default to 90 days (3 months)
 			}
 			maxArchiveTime := nostr.Now() - (nostr.Timestamp(archiveMaxDays) * 24 * 60 * 60)
+			
+			// Use smaller time windows to get more comprehensive coverage
+			const timeWindowHours = 24 // 24-hour windows
+			timeWindowSeconds := nostr.Timestamp(timeWindowHours * 60 * 60)
+			
 			until := nostr.Now()
-			limit := 1000 // Events per page
+			limit := 500 // Smaller limit to avoid relay restrictions
 			totalEvents := 0
-			pageCount := 0
+			windowCount := 0
 
-			for {
-				pageCount++
-				log.Printf("📦 fetching page %d (until: %d, limit: %d, max days: %d, kinds: %v)", pageCount, until, limit, archiveMaxDays, filters[0].Kinds)
+			for until > maxArchiveTime {
+				windowCount++
+				windowStart := until - timeWindowSeconds
+				if windowStart < maxArchiveTime {
+					windowStart = maxArchiveTime
+				}
 
-				// Create filter with pagination
-				paginatedFilter := filters[0]
-				paginatedFilter.Until = &until
-				paginatedFilter.Limit = limit
+				log.Printf("📦 fetching time window %d (from: %d, until: %d, limit: %d, kinds: %v)", 
+					windowCount, windowStart, until, limit, filters[0].Kinds)
 
-				pageEvents := 0
-				for ev := range pool.FetchMany(timeout, seedRelays, paginatedFilter) {
+				// Create filter with time window
+				windowFilter := filters[0]
+				windowFilter.Since = &windowStart
+				windowFilter.Until = &until
+				windowFilter.Limit = limit
+
+				windowEvents := 0
+				for ev := range pool.FetchMany(timeout, seedRelays, windowFilter) {
 					// Use worker pool instead of creating unlimited goroutines
 					select {
 					case <-timeout.Done():
@@ -769,45 +782,34 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 						return
 					default:
 						eventProcessor.ProcessEvent(*ev.Event)
-						pageEvents++
+						windowEvents++
 						totalEvents++
 
-						// Update 'until' to the oldest event we've seen
-						if ev.Event.CreatedAt < until {
-							until = ev.Event.CreatedAt
-						}
-
 						// Debug: log first few events to understand what we're getting
-						if pageEvents <= 3 {
+						if windowEvents <= 3 {
 							log.Printf("📦 DEBUG: event %d - kind: %d, author: %s, created: %d", 
-								pageEvents, ev.Event.Kind, ev.Event.PubKey, ev.Event.CreatedAt)
+								windowEvents, ev.Event.Kind, ev.Event.PubKey, ev.Event.CreatedAt)
 						}
 					}
 				}
 
-				log.Printf("📦 page %d: processed %d events (total: %d)", pageCount, pageEvents, totalEvents)
+				log.Printf("📦 window %d: processed %d events (total: %d)", windowCount, windowEvents, totalEvents)
 
-				// Stop if we got fewer events than the limit (no more events)
-				if pageEvents < limit {
-					log.Printf("📦 reached end of events (got %d < %d)", pageEvents, limit)
-					break
-				}
+				// Move to next time window
+				until = windowStart
 
-				// Stop if we've gone back too far (configurable limit)
-				if until < maxArchiveTime {
-					log.Printf("📦 reached %d-day limit (until: %d < %d)", archiveMaxDays, until, maxArchiveTime)
-					break
-				}
-
-				// Small delay between pages to be nice to relays
-				time.Sleep(100 * time.Millisecond)
+				// Small delay between windows to be nice to relays
+				time.Sleep(200 * time.Millisecond)
 			}
 
-			log.Printf("📦 pagination completed: %d total events across %d pages", totalEvents, pageCount)
+			log.Printf("📦 pagination completed: %d total events across %d time windows", totalEvents, windowCount)
 
 			log.Printf("📦 archived %d trusted notes and discarded %d untrusted notes",
 				atomic.LoadInt64(&trustedNotes),
 				atomic.LoadInt64(&untrustedNotes))
+			
+			log.Println("📦 archiving completed, now refreshing profiles...")
+			refreshProfiles(ctx)
 		} else {
 			log.Println("🔄 web of trust will refresh in", config.RefreshInterval, "hours")
 			<-timeout.Done()
