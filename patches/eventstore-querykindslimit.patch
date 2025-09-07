@@ -1,11 +1,10 @@
---- a/sqlite3/query.go
-+++ b/sqlite3/query.go
-@@ -8,7 +8,7 @@ import (
- 
- func (s *SQLite3Backend) QueryEvents(ctx context.Context, filter eventstore.Filter) (chan *nostr.Event, error) {
- 	// Build the query
--	query, args, err := s.buildQuery(filter, 10) // Default limit of 10 kinds
-+	query, args, err := s.buildQuery(filter, s.QueryKindsLimit) // Use configured limit
- 	if err != nil {
- 		return nil, err
- 	}
+--- a/sqlite3/init.go
++++ b/sqlite3/init.go
+@@ -10,7 +10,7 @@ const (
+ 	queryLimit        = 100
+ 	queryIDsLimit     = 500
+ 	queryAuthorsLimit = 500
+-	queryKindsLimit   = 10
++	queryKindsLimit   = 50
+ 	queryTagsLimit    = 10
+ )

@@ -87,13 +87,14 @@ LOG_LEVEL=INFO
 
 ### Important: Eventstore Patch
 
-The Docker build automatically applies a patch to the `eventstore` library to fix the `QueryKindsLimit` issue. This patch:
+The Docker build automatically applies a patch to the `eventstore` library to fix the `QueryKindsLimit` issue:
 
-- Increases the default limit from 10 to 50 kinds per query
-- Uses the configured `QueryKindsLimit` value from the database configuration
-- Prevents "too many kinds" errors during WoT building and archiving
+- **Default library limit**: 10 kinds per query
+- **Patched limit**: 50 kinds per query
+- **Application configured limit**: 50 kinds per query (in `getDB()` function)
+- **Prevents**: "too many kinds" errors during WoT building and archiving
 
-The patch is applied automatically during the Docker build process.
+The patch changes the default `queryKindsLimit` constant in `init.go` from 10 to 50, ensuring compatibility even if the application configuration is not applied.
 
 ### Basic Deployment
 ```bash
