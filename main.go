@@ -427,9 +427,9 @@ func main() {
 		policies.ConnectionRateLimiter(10, time.Minute*2, 30),
 	)
 
-	relay.StoreEvent = append(relay.StoreEvent, db.SaveEvent)
-	relay.QueryEvents = append(relay.QueryEvents, db.QueryEvents)
-	relay.DeleteEvent = append(relay.DeleteEvent, db.DeleteEvent)
+	relay.StoreEvent = append(relay.StoreEvent, profiledDB.SaveEvent)
+	relay.QueryEvents = append(relay.QueryEvents, profiledDB.QueryEvents)
+	relay.DeleteEvent = append(relay.DeleteEvent, profiledDB.DeleteEvent)
 	relay.RejectEvent = append(relay.RejectEvent, func(ctx context.Context, event *nostr.Event) (bool, string) {
 		// Don't reject events if we haven't booted yet or if trust network is empty
 		trustNetworkMutex.RLock()
@@ -590,14 +590,14 @@ func main() {
 					// Get eventstore performance stats
 					perfStats := profiledDB.GetStats()
 					eventStoreStats = map[string]interface{}{
-						"save_event_calls":     perfStats.SaveEventCalls,
-						"save_event_avg_ms":    perfStats.SaveEventDuration.Milliseconds() / max(1, perfStats.SaveEventCalls),
-						"query_events_calls":   perfStats.QueryEventsCalls,
-						"query_events_avg_ms":  perfStats.QueryEventsDuration.Milliseconds() / max(1, perfStats.QueryEventsCalls),
-						"delete_event_calls":   perfStats.DeleteEventCalls,
-						"delete_event_avg_ms":  perfStats.DeleteEventDuration.Milliseconds() / max(1, perfStats.DeleteEventCalls),
+						"save_event_calls":    perfStats.SaveEventCalls,
+						"save_event_avg_ms":   perfStats.SaveEventDuration.Milliseconds() / max(1, perfStats.SaveEventCalls),
+						"query_events_calls":  perfStats.QueryEventsCalls,
+						"query_events_avg_ms": perfStats.QueryEventsDuration.Milliseconds() / max(1, perfStats.QueryEventsCalls),
+						"delete_event_calls":  perfStats.DeleteEventCalls,
+						"delete_event_avg_ms": perfStats.DeleteEventDuration.Milliseconds() / max(1, perfStats.DeleteEventCalls),
 					}
-					
+
 					// Also get SQLite connection stats
 					if sqliteDB, ok := profiledDB.GetBackend().(*sqlite3.SQLite3Backend); ok {
 						stats := sqliteDB.Stats()
@@ -751,7 +751,7 @@ func monitorResources() {
 					if profiledDB, ok := db.Store.(*ProfiledEventStore); ok {
 						// Log eventstore performance stats
 						profiledDB.LogStats()
-						
+
 						// Also get SQLite connection stats
 						if sqliteDB, ok := profiledDB.GetBackend().(*sqlite3.SQLite3Backend); ok {
 							stats := sqliteDB.Stats()
