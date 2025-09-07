@@ -586,6 +586,10 @@ func main() {
 		var eventStoreStats map[string]interface{}
 		if wdb != nil {
 			if db, ok := wdb.(*eventstore.RelayWrapper); ok {
+				// Debug: log the actual type of db.Store
+				logger.Debug("STATS", "Database store type", map[string]interface{}{
+					"store_type": fmt.Sprintf("%T", db.Store),
+				})
 				if profiledDB, ok := db.Store.(*ProfiledEventStore); ok {
 					// Get eventstore performance stats
 					perfStats := profiledDB.GetStats()
@@ -597,7 +601,11 @@ func main() {
 						"delete_event_calls":  perfStats.DeleteEventCalls,
 						"delete_event_avg_ms": perfStats.DeleteEventDuration.Milliseconds() / max(1, perfStats.DeleteEventCalls),
 					}
-
+					logger.Debug("STATS", "Profiled database stats found", map[string]interface{}{
+						"save_calls":   perfStats.SaveEventCalls,
+						"query_calls":  perfStats.QueryEventsCalls,
+						"delete_calls": perfStats.DeleteEventCalls,
+					})
 					// Also get SQLite connection stats
 					if sqliteDB, ok := profiledDB.GetBackend().(*sqlite3.SQLite3Backend); ok {
 						stats := sqliteDB.Stats()
@@ -608,6 +616,10 @@ func main() {
 							"wait_count":       stats.WaitCount,
 						}
 					}
+				} else {
+					logger.Debug("STATS", "Type assertion failed - not ProfiledEventStore", map[string]interface{}{
+						"actual_type": fmt.Sprintf("%T", db.Store),
+					})
 				}
 			}
 		}
