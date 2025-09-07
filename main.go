@@ -764,36 +764,71 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 					windowStart = maxArchiveTime
 				}
 
-				log.Printf("📦 fetching time window %d (from: %d, until: %d, limit: %d, kinds: %v)",
-					windowCount, windowStart, until, limit, filters[0].Kinds)
+				log.Printf("📦 fetching time window %d (from: %d, until: %d, kinds: %v)", 
+					windowCount, windowStart, until, filters[0].Kinds)
 
-				// Create filter with time window
-				windowFilter := filters[0]
-				windowFilter.Since = &windowStart
-				windowFilter.Until = &until
-				windowFilter.Limit = limit
-
+				// Paginate within this time window
+				windowUntil := until
 				windowEvents := 0
-				for ev := range pool.FetchMany(timeout, seedRelays, windowFilter) {
-					// Use worker pool instead of creating unlimited goroutines
-					select {
-					case <-timeout.Done():
-						log.Printf("📦 timeout reached, stopping pagination")
-						return
-					default:
-						eventProcessor.ProcessEvent(*ev.Event)
-						windowEvents++
-						totalEvents++
+				pageInWindow := 0
 
-						// Debug: log first few events to understand what we're getting
-						if windowEvents <= 3 {
-							log.Printf("📦 DEBUG: event %d - kind: %d, author: %s, created: %d",
-								windowEvents, ev.Event.Kind, ev.Event.PubKey, ev.Event.CreatedAt)
+				for {
+					pageInWindow++
+					log.Printf("📦 window %d, page %d (from: %d, until: %d, limit: %d)", 
+						windowCount, pageInWindow, windowStart, windowUntil, limit)
+
+					// Create filter with time window and pagination
+					windowFilter := filters[0]
+					windowFilter.Since = &windowStart
+					windowFilter.Until = &windowUntil
+					windowFilter.Limit = limit
+
+					pageEvents := 0
+					for ev := range pool.FetchMany(timeout, seedRelays, windowFilter) {
+						// Use worker pool instead of creating unlimited goroutines
+						select {
+						case <-timeout.Done():
+							log.Printf("📦 timeout reached, stopping pagination")
+							return
+						default:
+							eventProcessor.ProcessEvent(*ev.Event)
+							pageEvents++
+							windowEvents++
+							totalEvents++
+
+							// Update until timestamp for next page
+							if ev.Event.CreatedAt < windowUntil {
+								windowUntil = ev.Event.CreatedAt
+							}
+
+							// Debug: log first few events to understand what we're getting
+							if pageEvents <= 3 {
+								log.Printf("📦 DEBUG: event %d - kind: %d, author: %s, created: %d", 
+									pageEvents, ev.Event.Kind, ev.Event.PubKey, ev.Event.CreatedAt)
+							}
 						}
 					}
+
+					log.Printf("📦 window %d, page %d: processed %d events (window total: %d, overall total: %d)", 
+						windowCount, pageInWindow, pageEvents, windowEvents, totalEvents)
+
+					// Stop if we got fewer events than the limit (no more events in this window)
+					if pageEvents < limit {
+						log.Printf("📦 window %d completed: got %d < %d events", windowCount, pageEvents, limit)
+						break
+					}
+
+					// Stop if we've gone back too far within this window
+					if windowUntil <= windowStart {
+						log.Printf("📦 window %d completed: reached window start", windowCount)
+						break
+					}
+
+					// Small delay between pages within the same window
+					time.Sleep(100 * time.Millisecond)
 				}
 
-				log.Printf("📦 window %d: processed %d events (total: %d)", windowCount, windowEvents, totalEvents)
+				log.Printf("📦 window %d completed: processed %d events (total: %d)", windowCount, windowEvents, totalEvents)
 
 				// Move to next time window
 				until = windowStart
