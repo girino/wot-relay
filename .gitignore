@@ -4,3 +4,8 @@ wot-relay
 .history
 .history/*
 wot-relay.exe
+
+# Docker Compose files
+docker-compose.yml
+docker-compose.*.yml
+!docker-compose.prod.yml
