@@ -1515,20 +1515,36 @@ func optimizeDatabase(db *sqlite3.SQLite3Backend) error {
 
 	// Add custom indexes for specific query patterns used by the relay
 	customIndexes := []string{
-		// Composite index for pubkey + time queries (most common)
-		`CREATE INDEX IF NOT EXISTS pubkey_time_idx ON event(pubkey, created_at DESC)`,
+		// Primary composite index for most common query pattern: authors + kinds + time
+		// This covers queries like: WHERE pubkey IN (...) AND kind IN (...) ORDER BY created_at DESC
+		`CREATE INDEX IF NOT EXISTS authors_kinds_time_idx ON event(pubkey, kind, created_at DESC)`,
 
-		// Composite index for kind + pubkey + time queries
-		`CREATE INDEX IF NOT EXISTS kind_pubkey_time_idx ON event(kind, pubkey, created_at DESC)`,
+		// Optimized index for WoT queries: kind 1984 + authors + time
+		// Covers: WHERE kind = 1984 AND pubkey IN (...) ORDER BY created_at DESC
+		`CREATE INDEX IF NOT EXISTS kind1984_authors_time_idx ON event(kind, pubkey, created_at DESC) WHERE kind = 1984`,
 
-		// Index for time-based queries (used in deleteOldNotes)
+		// Optimized index for profile queries: kind 0 + authors + time
+		// Covers: WHERE kind = 0 AND pubkey IN (...) ORDER BY created_at DESC
+		`CREATE INDEX IF NOT EXISTS kind0_authors_time_idx ON event(kind, pubkey, created_at DESC) WHERE kind = 0`,
+
+		// Optimized index for follow list queries: kind 3 + authors + time
+		// Covers: WHERE kind = 3 AND pubkey IN (...) ORDER BY created_at DESC
+		`CREATE INDEX IF NOT EXISTS kind3_authors_time_idx ON event(kind, pubkey, created_at DESC) WHERE kind = 3`,
+
+		// Index for time-based queries (used in deleteOldNotes and archiving)
 		`CREATE INDEX IF NOT EXISTS created_at_idx ON event(created_at)`,
 
-		// Index for pubkey + kind queries (common in filters)
-		`CREATE INDEX IF NOT EXISTS pubkey_kind_idx ON event(pubkey, kind)`,
+		// Index for pubkey-only queries (when no kind filter)
+		`CREATE INDEX IF NOT EXISTS pubkey_time_idx ON event(pubkey, created_at DESC)`,
 
-		// Index for tags JSON queries (if needed for complex tag filtering)
-		`CREATE INDEX IF NOT EXISTS tags_content_idx ON event(tags, content)`,
+		// Index for kind-only queries (when no author filter)
+		`CREATE INDEX IF NOT EXISTS kind_time_idx ON event(kind, created_at DESC)`,
+
+		// Index for tag queries with #p tags (WoT queries)
+		`CREATE INDEX IF NOT EXISTS tags_p_idx ON event(tags) WHERE tags LIKE '%"#p"%'`,
+
+		// Index for complex multi-kind queries (archiving)
+		`CREATE INDEX IF NOT EXISTS multi_kind_time_idx ON event(kind, created_at DESC) WHERE kind IN (1,6,16,1984,9735,6969,1040,1010,1111)`,
 	}
 
 	log.Println("🔧 Adding custom database indexes...")
@@ -1536,6 +1552,41 @@ func optimizeDatabase(db *sqlite3.SQLite3Backend) error {
 		if _, err := db.Exec(idx); err != nil {
 			log.Printf("Warning: Failed to create index %d: %v", i+1, err)
 			// Continue with other indexes even if one fails
+		}
+	}
+
+	// Additional SQLite optimizations for better query performance
+	optimizationQueries := []string{
+		// Enable query planner optimizations
+		`PRAGMA optimize`,
+
+		// Increase cache size for better performance with large datasets
+		`PRAGMA cache_size = -64000`, // 64MB cache
+
+		// Enable WAL mode for better concurrency
+		`PRAGMA journal_mode = WAL`,
+
+		// Increase page size for better I/O performance
+		`PRAGMA page_size = 4096`,
+
+		// Enable foreign key constraints (if needed)
+		`PRAGMA foreign_keys = ON`,
+
+		// Set synchronous mode for better performance (with some risk)
+		`PRAGMA synchronous = NORMAL`,
+
+		// Enable memory-mapped I/O for better performance
+		`PRAGMA mmap_size = 268435456`, // 256MB
+
+		// Analyze tables to help query planner
+		`ANALYZE`,
+	}
+
+	log.Println("🔧 Applying SQLite performance optimizations...")
+	for i, query := range optimizationQueries {
+		if _, err := db.Exec(query); err != nil {
+			log.Printf("Warning: Failed to apply optimization %d: %v", i+1, err)
+			// Continue with other optimizations even if one fails
 		}
 	}
 
