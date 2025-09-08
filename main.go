@@ -615,6 +615,7 @@ func main() {
 
 						// Pure database time (excluding semaphore wait time)
 						"save_event_db_avg_ms":    perfStats.SaveEventDBDuration.Milliseconds() / max(1, perfStats.SaveEventCalls),
+						"query_events_db_avg_ms":  perfStats.QueryEventsDBDuration.Milliseconds() / max(1, perfStats.QueryEventsCalls),
 						"delete_event_db_avg_ms":  perfStats.DeleteEventDBDuration.Milliseconds() / max(1, perfStats.DeleteEventCalls),
 						"replace_event_db_avg_ms": perfStats.ReplaceEventDBDuration.Milliseconds() / max(1, perfStats.ReplaceEventCalls),
 					}
@@ -950,50 +951,57 @@ func refreshProfiles(ctx context.Context) {
 	}
 	trustNetworkMutex.RUnlock()
 
-	// Find pubkeys that need profile refresh (missing profiles only)
+	// Find pubkeys that need profile refresh (missing profiles only) using batch queries
 	pubkeysToRefresh := make([]string, 0)
+	existingProfiles := make(map[string]bool)
 
 	logger.Info("PROFILES", "Checking profiles for refresh", map[string]interface{}{
 		"total_profiles": len(trustNetwork),
 		"check_type":     "missing_only",
+		"batch_size":     1000,
 	})
 
-	for i, pubkey := range trustNetwork {
-		// Check if profile exists at all
-		needsRefresh := true
+	// Process in batches to avoid "too many authors" errors
+	batchSize := 1000
+	for i := 0; i < len(trustNetwork); i += batchSize {
+		end := i + batchSize
+		if end > len(trustNetwork) {
+			end = len(trustNetwork)
+		}
 
-		// Query for existing profile
+		batch := trustNetwork[i:end]
+
+		// Query for existing profiles in this batch
 		filter := nostr.Filter{
-			Authors: []string{pubkey},
+			Authors: batch,
 			Kinds:   []int{nostr.KindProfileMetadata},
 			Limit:   1,
 		}
 
-		// Quick check with short timeout
-		checkCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+		// Quick check with reasonable timeout
+		checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		ch, err := wdb.QueryEvents(checkCtx, filter)
 		if err == nil {
-			for range ch {
-				// If we found any profile, we don't need to refresh
-				needsRefresh = false
-				break
+			for ev := range ch {
+				existingProfiles[ev.PubKey] = true
 			}
 		}
 		cancel()
 
-		if needsRefresh {
-			pubkeysToRefresh = append(pubkeysToRefresh, pubkey)
-		}
+		// Log progress every batch
+		progress := float64(end) / float64(len(trustNetwork)) * 100
+		logger.Info("PROFILES", "Profile check progress", map[string]interface{}{
+			"checked":      end,
+			"total":        len(trustNetwork),
+			"progress_pct": progress,
+			"batch_size":   len(batch),
+		})
+	}
 
-		// Log progress every 1000 profiles
-		if (i+1)%1000 == 0 {
-			progress := float64(i+1) / float64(len(trustNetwork)) * 100
-			logger.Info("PROFILES", "Profile check progress", map[string]interface{}{
-				"checked":       i + 1,
-				"total":         len(trustNetwork),
-				"progress_pct":  progress,
-				"missing_found": len(pubkeysToRefresh),
-			})
+	// Find missing profiles
+	for _, pubkey := range trustNetwork {
+		if !existingProfiles[pubkey] {
+			pubkeysToRefresh = append(pubkeysToRefresh, pubkey)
 		}
 	}
 
@@ -1021,7 +1029,7 @@ func refreshProfiles(ctx context.Context) {
 
 		// force cancel context every time
 		func() {
-			timeout, cancel := context.WithTimeout(ctx, 4*time.Second)
+			timeout, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 
 			end := i + stepSize
@@ -1098,7 +1106,7 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 				}}
 
 				func() { // avoid "too many concurrent reqs" error
-					timeout, cancel := context.WithTimeout(ctx, 5*time.Second)
+					timeout, cancel := context.WithTimeout(ctx, 30*time.Second)
 					defer cancel()
 					// Create temporary pool for this operation
 					tempPool := createTemporaryPool(ctx)

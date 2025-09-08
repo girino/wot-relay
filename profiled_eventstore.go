@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -29,6 +30,7 @@ type EventStoreStats struct {
 
 	// Pure database time (excluding queue time) - from worker's perspective
 	SaveEventDBDuration    time.Duration
+	QueryEventsDBDuration  time.Duration
 	DeleteEventDBDuration  time.Duration
 	ReplaceEventDBDuration time.Duration
 }
@@ -93,7 +95,7 @@ func (p *ProfiledEventStore) SaveEvent(ctx context.Context, evt *nostr.Event) er
 		p.stats.SaveEventDuration += duration
 		p.mutex.Unlock()
 
-		if duration > 100*time.Millisecond {
+		if duration > 200*time.Millisecond {
 			log.Printf("🐌 SLOW SaveEvent (total): %v (event %s)", duration, evt.ID)
 		}
 	}()
@@ -116,7 +118,7 @@ func (p *ProfiledEventStore) SaveEvent(ctx context.Context, evt *nostr.Event) er
 	p.stats.SaveEventDBDuration += dbDuration
 	p.mutex.Unlock()
 
-	if dbDuration > 50*time.Millisecond {
+	if dbDuration > 100*time.Millisecond {
 		log.Printf("🐌 SLOW SaveEvent (DB only): %v (event %s)", dbDuration, evt.ID)
 	}
 
@@ -125,6 +127,15 @@ func (p *ProfiledEventStore) SaveEvent(ctx context.Context, evt *nostr.Event) er
 
 // QueryEvents profiles the QueryEvents method with concurrent access
 func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filter) (chan *nostr.Event, error) {
+
+	// Validate filter to prevent empty tag set errors
+	if err := p.validateFilter(filter); err != nil {
+		log.Printf("❌ QueryEvents error: %v", err)
+		log.Printf("🔍 Filter details: %+v", filter)
+		closedCh := make(chan *nostr.Event)
+		close(closedCh)
+		return closedCh, err
+	}
 
 	// Acquire read semaphore for concurrency control
 	select {
@@ -136,7 +147,7 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 		return closedCh, ctx.Err()
 	}
 
-	// Track performance
+	// Track performance - total time (including semaphore wait)
 	start := time.Now()
 	defer func() {
 		duration := time.Since(start)
@@ -149,12 +160,22 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 		<-p.readSemaphore
 
 		if duration > 500*time.Millisecond {
-			log.Printf("🐌 SLOW QueryEvents: %v (filter: %+v)", duration, filter)
+			log.Printf("🐌 SLOW QueryEvents (total): %v (filter: %+v)", duration, filter)
 		}
 	}()
 
-	// Execute query directly with concurrency control
+	// Execute query and measure pure DB time
+	dbStart := time.Now()
 	ch, err := p.backend.QueryEvents(ctx, filter)
+	dbDuration := time.Since(dbStart)
+
+	p.mutex.Lock()
+	p.stats.QueryEventsDBDuration += dbDuration
+	p.mutex.Unlock()
+
+	if dbDuration > 200*time.Millisecond {
+		log.Printf("🐌 SLOW QueryEvents (DB only): %v (filter: %+v)", dbDuration, filter)
+	}
 	if err != nil {
 		log.Printf("❌ QueryEvents error: %v", err)
 		log.Printf("🔍 Filter details: %+v", filter)
@@ -177,7 +198,7 @@ func (p *ProfiledEventStore) DeleteEvent(ctx context.Context, evt *nostr.Event) 
 		p.stats.DeleteEventDuration += duration
 		p.mutex.Unlock()
 
-		if duration > 100*time.Millisecond {
+		if duration > 200*time.Millisecond {
 			log.Printf("🐌 SLOW DeleteEvent (total): %v (event %s)", duration, evt.ID)
 		}
 	}()
@@ -200,7 +221,7 @@ func (p *ProfiledEventStore) DeleteEvent(ctx context.Context, evt *nostr.Event) 
 	p.stats.DeleteEventDBDuration += dbDuration
 	p.mutex.Unlock()
 
-	if dbDuration > 50*time.Millisecond {
+	if dbDuration > 100*time.Millisecond {
 		log.Printf("🐌 SLOW DeleteEvent (DB only): %v (event %s)", dbDuration, evt.ID)
 	}
 
@@ -218,7 +239,7 @@ func (p *ProfiledEventStore) ReplaceEvent(ctx context.Context, evt *nostr.Event)
 		p.stats.ReplaceEventDuration += duration
 		p.mutex.Unlock()
 
-		if duration > 100*time.Millisecond {
+		if duration > 200*time.Millisecond {
 			log.Printf("🐌 SLOW ReplaceEvent (total): %v (event %s)", duration, evt.ID)
 		}
 	}()
@@ -241,7 +262,7 @@ func (p *ProfiledEventStore) ReplaceEvent(ctx context.Context, evt *nostr.Event)
 	p.stats.ReplaceEventDBDuration += dbDuration
 	p.mutex.Unlock()
 
-	if dbDuration > 50*time.Millisecond {
+	if dbDuration > 100*time.Millisecond {
 		log.Printf("🐌 SLOW ReplaceEvent (DB only): %v (event %s)", dbDuration, evt.ID)
 	}
 
@@ -308,6 +329,7 @@ func (p *ProfiledEventStore) ResetStats() {
 
 	// Reset pure database timing
 	p.stats.SaveEventDBDuration = 0
+	p.stats.QueryEventsDBDuration = 0
 	p.stats.DeleteEventDBDuration = 0
 	p.stats.ReplaceEventDBDuration = 0
 
@@ -320,6 +342,7 @@ func (p *ProfiledEventStore) LogStats() {
 	defer p.mutex.RUnlock()
 
 	logger.Info("MONITOR", "EventStore Performance Stats", map[string]interface{}{
+		// Total time (including semaphore wait time)
 		"save_event_calls":     p.stats.SaveEventCalls,
 		"save_event_avg_ms":    p.stats.SaveEventDuration.Milliseconds() / max(1, p.stats.SaveEventCalls),
 		"query_events_calls":   p.stats.QueryEventsCalls,
@@ -332,6 +355,14 @@ func (p *ProfiledEventStore) LogStats() {
 		"init_avg_ms":          p.stats.InitDuration.Milliseconds() / max(1, p.stats.InitCalls),
 		"close_calls":          p.stats.CloseCalls,
 		"close_avg_ms":         p.stats.CloseDuration.Milliseconds() / max(1, p.stats.CloseCalls),
+
+		// Pure database time (excluding semaphore wait time)
+		"save_event_db_avg_ms":    p.stats.SaveEventDBDuration.Milliseconds() / max(1, p.stats.SaveEventCalls),
+		"query_events_db_avg_ms":  p.stats.QueryEventsDBDuration.Milliseconds() / max(1, p.stats.QueryEventsCalls),
+		"delete_event_db_avg_ms":  p.stats.DeleteEventDBDuration.Milliseconds() / max(1, p.stats.DeleteEventCalls),
+		"replace_event_db_avg_ms": p.stats.ReplaceEventDBDuration.Milliseconds() / max(1, p.stats.ReplaceEventCalls),
+
+		// Semaphore usage
 		"write_semaphore_used": len(p.writeSemaphore),
 		"write_semaphore_cap":  cap(p.writeSemaphore),
 		"read_semaphore_used":  len(p.readSemaphore),
@@ -344,5 +375,31 @@ func (p *ProfiledEventStore) Stats() interface{} {
 	if sqliteBackend, ok := p.backend.(*sqlite3.SQLite3Backend); ok {
 		return sqliteBackend.Stats()
 	}
+	return nil
+}
+
+// validateFilter checks for problematic filter configurations that cause database errors
+func (p *ProfiledEventStore) validateFilter(filter nostr.Filter) error {
+	// Check for empty tag arrays that cause "empty tag set" errors
+	if len(filter.Tags) > 0 {
+		for tagName, tagValues := range filter.Tags {
+			if len(tagValues) == 0 {
+				return fmt.Errorf("empty tag set for tag '%s'", tagName)
+			}
+		}
+	}
+
+	// Check for too many tag values that exceed SQLite limits
+	for tagName, tagValues := range filter.Tags {
+		if len(tagValues) > 1000 { // SQLite practical limit
+			return fmt.Errorf("too many tag values for tag '%s': %d (max 1000)", tagName, len(tagValues))
+		}
+	}
+
+	// Check for too many authors
+	if len(filter.Authors) > 1000 {
+		return fmt.Errorf("too many authors: %d (max 1000)", len(filter.Authors))
+	}
+
 	return nil
 }
