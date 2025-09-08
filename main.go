@@ -1206,6 +1206,15 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 			"cycle_duration_minutes": cycleDuration.Minutes(),
 		})
 
+		// Reset performance stats for clean metrics in next cycle
+		if wdb != nil {
+			if db, ok := wdb.(eventstore.RelayWrapper); ok {
+				if profiledDB, ok := db.Store.(*ProfiledEventStore); ok {
+					profiledDB.ResetStats()
+				}
+			}
+		}
+
 		// Wait for the configured refresh interval before next cycle
 		time.Sleep(time.Duration(config.RefreshInterval) * time.Hour)
 	}

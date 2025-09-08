@@ -287,6 +287,33 @@ func (p *ProfiledEventStore) GetStats() EventStoreStats {
 	return *p.stats
 }
 
+// ResetStats resets all performance statistics to zero
+func (p *ProfiledEventStore) ResetStats() {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+
+	// Reset all counters and durations
+	p.stats.SaveEventCalls = 0
+	p.stats.SaveEventDuration = 0
+	p.stats.QueryEventsCalls = 0
+	p.stats.QueryEventsDuration = 0
+	p.stats.DeleteEventCalls = 0
+	p.stats.DeleteEventDuration = 0
+	p.stats.ReplaceEventCalls = 0
+	p.stats.ReplaceEventDuration = 0
+	p.stats.InitCalls = 0
+	p.stats.InitDuration = 0
+	p.stats.CloseCalls = 0
+	p.stats.CloseDuration = 0
+
+	// Reset pure database timing
+	p.stats.SaveEventDBDuration = 0
+	p.stats.DeleteEventDBDuration = 0
+	p.stats.ReplaceEventDBDuration = 0
+
+	log.Printf("📊 EventStore stats reset for new cycle")
+}
+
 // LogStats logs the current performance statistics
 func (p *ProfiledEventStore) LogStats() {
 	p.mutex.RLock()
