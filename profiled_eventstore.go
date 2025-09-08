@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -189,17 +188,6 @@ func (p *ProfiledEventStore) processWriteOperation(op DatabaseOperation) {
 	}
 }
 
-// validateFilter validates a nostr filter to prevent "empty tag set" errors
-func (p *ProfiledEventStore) validateFilter(filter nostr.Filter) error {
-	// Check for empty tag arrays that could cause "empty tag set" errors
-	for tagName, tagValues := range filter.Tags {
-		if len(tagValues) == 0 {
-			return fmt.Errorf("empty tag set for tag %s", tagName)
-		}
-	}
-	return nil
-}
-
 // GetBackend returns the underlying eventstore backend
 func (p *ProfiledEventStore) GetBackend() eventstore.Store {
 	return p.backend
@@ -234,12 +222,6 @@ func (p *ProfiledEventStore) SaveEvent(ctx context.Context, evt *nostr.Event) er
 
 // QueryEvents profiles the QueryEvents method with concurrent access
 func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filter) (chan *nostr.Event, error) {
-	// Validate filter to prevent "empty tag set" errors
-	if err := p.validateFilter(filter); err != nil {
-		closedCh := make(chan *nostr.Event)
-		close(closedCh)
-		return closedCh, err
-	}
 
 	// Acquire read semaphore for concurrency control
 	select {
