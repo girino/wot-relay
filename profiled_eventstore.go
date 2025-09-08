@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -50,48 +51,52 @@ type DatabaseOperation struct {
 	ErrorChan    chan error
 }
 
-// ProfiledEventStore wraps an eventstore with performance profiling and serialization
+// ProfiledEventStore wraps an eventstore with performance profiling and hybrid serialization
 type ProfiledEventStore struct {
 	backend eventstore.Store
 	stats   *EventStoreStats
 	mutex   sync.RWMutex
 
-	// Serialization channels
-	operationChan chan DatabaseOperation
-	workerDone    chan struct{}
-	workerWg      sync.WaitGroup
+	// Write serialization (for SaveEvent, DeleteEvent, ReplaceEvent)
+	writeOperationChan chan DatabaseOperation
+	writeWorkerDone    chan struct{}
+	writeWorkerWg      sync.WaitGroup
+
+	// Read concurrency control (for QueryEvents)
+	readSemaphore chan struct{}
 }
 
-// NewProfiledEventStore creates a new ProfiledEventStore with serialized operations
+// NewProfiledEventStore creates a new ProfiledEventStore with hybrid serialization
 func NewProfiledEventStore(backend eventstore.Store) *ProfiledEventStore {
 	p := &ProfiledEventStore{
-		backend:       backend,
-		stats:         &EventStoreStats{},
-		operationChan: make(chan DatabaseOperation, 1000), // Buffer for operations
-		workerDone:    make(chan struct{}),
+		backend:            backend,
+		stats:              &EventStoreStats{},
+		writeOperationChan: make(chan DatabaseOperation, 1000), // Buffer for write operations
+		writeWorkerDone:    make(chan struct{}),
+		readSemaphore:      make(chan struct{}, 10), // Allow up to 10 concurrent reads
 	}
 
-	// Start the serialization worker
-	p.workerWg.Add(1)
-	go p.serializationWorker()
+	// Start the write serialization worker
+	p.writeWorkerWg.Add(1)
+	go p.writeSerializationWorker()
 
 	return p
 }
 
-// serializationWorker processes database operations one at a time
-func (p *ProfiledEventStore) serializationWorker() {
-	defer p.workerWg.Done()
+// writeSerializationWorker processes write operations one at a time
+func (p *ProfiledEventStore) writeSerializationWorker() {
+	defer p.writeWorkerWg.Done()
 
 	for {
 		select {
-		case op := <-p.operationChan:
-			p.processOperation(op)
-		case <-p.workerDone:
+		case op := <-p.writeOperationChan:
+			p.processWriteOperation(op)
+		case <-p.writeWorkerDone:
 			// Process remaining operations before shutdown
 			for {
 				select {
-				case op := <-p.operationChan:
-					p.processOperation(op)
+				case op := <-p.writeOperationChan:
+					p.processWriteOperation(op)
 				default:
 					return
 				}
@@ -100,8 +105,8 @@ func (p *ProfiledEventStore) serializationWorker() {
 	}
 }
 
-// processOperation handles a single database operation
-func (p *ProfiledEventStore) processOperation(op DatabaseOperation) {
+// processWriteOperation handles a single write database operation
+func (p *ProfiledEventStore) processWriteOperation(op DatabaseOperation) {
 	var err error
 	var result interface{}
 
@@ -118,30 +123,6 @@ func (p *ProfiledEventStore) processOperation(op DatabaseOperation) {
 
 		if duration > 100*time.Millisecond {
 			log.Printf("🐌 SLOW SaveEvent: %v (event %s)", duration, op.SaveEvent.ID)
-		}
-
-	case OpQueryEvents:
-		start := time.Now()
-		ch, queryErr := p.backend.QueryEvents(context.Background(), *op.QueryFilter)
-		duration := time.Since(start)
-
-		p.mutex.Lock()
-		p.stats.QueryEventsCalls++
-		p.stats.QueryEventsDuration += duration
-		p.mutex.Unlock()
-
-		if duration > 500*time.Millisecond {
-			log.Printf("🐌 SLOW QueryEvents: %v (filter: %+v)", duration, *op.QueryFilter)
-		}
-
-		if queryErr != nil {
-			log.Printf("❌ QueryEvents error: %v", queryErr)
-			closedCh := make(chan *nostr.Event)
-			close(closedCh)
-			result = closedCh
-			err = queryErr
-		} else {
-			result = ch
 		}
 
 	case OpDeleteEvent:
@@ -208,6 +189,17 @@ func (p *ProfiledEventStore) processOperation(op DatabaseOperation) {
 	}
 }
 
+// validateFilter validates a nostr filter to prevent "empty tag set" errors
+func (p *ProfiledEventStore) validateFilter(filter nostr.Filter) error {
+	// Check for empty tag arrays that could cause "empty tag set" errors
+	for tagName, tagValues := range filter.Tags {
+		if len(tagValues) == 0 {
+			return fmt.Errorf("empty tag set for tag %s", tagName)
+		}
+	}
+	return nil
+}
+
 // GetBackend returns the underlying eventstore backend
 func (p *ProfiledEventStore) GetBackend() eventstore.Store {
 	return p.backend
@@ -226,7 +218,7 @@ func (p *ProfiledEventStore) SaveEvent(ctx context.Context, evt *nostr.Event) er
 	}
 
 	select {
-	case p.operationChan <- op:
+	case p.writeOperationChan <- op:
 		// Operation queued successfully
 	case <-ctx.Done():
 		return ctx.Err()
@@ -240,44 +232,52 @@ func (p *ProfiledEventStore) SaveEvent(ctx context.Context, evt *nostr.Event) er
 	}
 }
 
-// QueryEvents profiles the QueryEvents method
+// QueryEvents profiles the QueryEvents method with concurrent access
 func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filter) (chan *nostr.Event, error) {
-	resultChan := make(chan interface{}, 1)
-	errorChan := make(chan error, 1)
-
-	op := DatabaseOperation{
-		Type:        OpQueryEvents,
-		QueryFilter: &filter,
-		ResultChan:  resultChan,
-		ErrorChan:   errorChan,
-	}
-
-	select {
-	case p.operationChan <- op:
-		// Operation queued successfully
-	case <-ctx.Done():
-		closedCh := make(chan *nostr.Event)
-		close(closedCh)
-		return closedCh, ctx.Err()
-	}
-
-	select {
-	case result := <-resultChan:
-		if ch, ok := result.(chan *nostr.Event); ok {
-			return ch, nil
-		}
-		closedCh := make(chan *nostr.Event)
-		close(closedCh)
-		return closedCh, nil
-	case err := <-errorChan:
+	// Validate filter to prevent "empty tag set" errors
+	if err := p.validateFilter(filter); err != nil {
 		closedCh := make(chan *nostr.Event)
 		close(closedCh)
 		return closedCh, err
+	}
+
+	// Acquire read semaphore for concurrency control
+	select {
+	case p.readSemaphore <- struct{}{}:
+		// Got semaphore, proceed with query
 	case <-ctx.Done():
 		closedCh := make(chan *nostr.Event)
 		close(closedCh)
 		return closedCh, ctx.Err()
 	}
+
+	// Track performance
+	start := time.Now()
+	defer func() {
+		duration := time.Since(start)
+		p.mutex.Lock()
+		p.stats.QueryEventsCalls++
+		p.stats.QueryEventsDuration += duration
+		p.mutex.Unlock()
+
+		// Release semaphore
+		<-p.readSemaphore
+
+		if duration > 500*time.Millisecond {
+			log.Printf("🐌 SLOW QueryEvents: %v (filter: %+v)", duration, filter)
+		}
+	}()
+
+	// Execute query directly with concurrency control
+	ch, err := p.backend.QueryEvents(ctx, filter)
+	if err != nil {
+		log.Printf("❌ QueryEvents error: %v", err)
+		closedCh := make(chan *nostr.Event)
+		close(closedCh)
+		return closedCh, err
+	}
+
+	return ch, nil
 }
 
 // DeleteEvent profiles the DeleteEvent method
@@ -293,7 +293,7 @@ func (p *ProfiledEventStore) DeleteEvent(ctx context.Context, evt *nostr.Event) 
 	}
 
 	select {
-	case p.operationChan <- op:
+	case p.writeOperationChan <- op:
 		// Operation queued successfully
 	case <-ctx.Done():
 		return ctx.Err()
@@ -320,7 +320,7 @@ func (p *ProfiledEventStore) ReplaceEvent(ctx context.Context, evt *nostr.Event)
 	}
 
 	select {
-	case p.operationChan <- op:
+	case p.writeOperationChan <- op:
 		// Operation queued successfully
 	case <-ctx.Done():
 		return ctx.Err()
@@ -346,7 +346,7 @@ func (p *ProfiledEventStore) Init() error {
 	}
 
 	select {
-	case p.operationChan <- op:
+	case p.writeOperationChan <- op:
 		// Operation queued successfully
 	default:
 		// If channel is full, process directly (for Init)
@@ -363,14 +363,14 @@ func (p *ProfiledEventStore) Init() error {
 
 // Close profiles the Close method
 func (p *ProfiledEventStore) Close() {
-	// Signal worker to stop
-	close(p.workerDone)
+	// Signal write worker to stop
+	close(p.writeWorkerDone)
 
-	// Wait for worker to finish
-	p.workerWg.Wait()
+	// Wait for write worker to finish
+	p.writeWorkerWg.Wait()
 
-	// Close the operation channel
-	close(p.operationChan)
+	// Close the write operation channel
+	close(p.writeOperationChan)
 
 	// Call backend Close
 	p.backend.Close()
@@ -401,8 +401,10 @@ func (p *ProfiledEventStore) LogStats() {
 		"init_avg_ms":          p.stats.InitDuration.Milliseconds() / max(1, p.stats.InitCalls),
 		"close_calls":          p.stats.CloseCalls,
 		"close_avg_ms":         p.stats.CloseDuration.Milliseconds() / max(1, p.stats.CloseCalls),
-		"operation_queue_size": len(p.operationChan),
-		"operation_queue_cap":  cap(p.operationChan),
+		"write_queue_size":     len(p.writeOperationChan),
+		"write_queue_cap":      cap(p.writeOperationChan),
+		"read_semaphore_used":  len(p.readSemaphore),
+		"read_semaphore_cap":   cap(p.readSemaphore),
 	})
 }
 
