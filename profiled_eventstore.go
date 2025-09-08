@@ -66,7 +66,7 @@ type ProfiledEventStore struct {
 
 	// Concurrency control using semaphores
 	writeSemaphore chan struct{} // Serialized writes (1 slot)
-	readSemaphore  chan struct{} // Concurrent reads (10 slots)
+	readSemaphore  chan struct{} // Concurrent reads (5 slots)
 }
 
 // NewProfiledEventStore creates a new ProfiledEventStore with semaphore-based concurrency
@@ -74,8 +74,8 @@ func NewProfiledEventStore(backend eventstore.Store) *ProfiledEventStore {
 	return &ProfiledEventStore{
 		backend:        backend,
 		stats:          &EventStoreStats{},
-		writeSemaphore: make(chan struct{}, 1),  // Serialized writes (1 slot)
-		readSemaphore:  make(chan struct{}, 10), // Concurrent reads (10 slots)
+		writeSemaphore: make(chan struct{}, 1), // Serialized writes (1 slot)
+		readSemaphore:  make(chan struct{}, 5), // Concurrent reads (5 slots)
 	}
 }
 
@@ -88,12 +88,19 @@ func (p *ProfiledEventStore) GetBackend() eventstore.Store {
 func (p *ProfiledEventStore) SaveEvent(ctx context.Context, evt *nostr.Event) error {
 	// Start timing from caller's perspective (includes semaphore wait time)
 	start := time.Now()
+	semaphoreAcquired := false
+
 	defer func() {
 		duration := time.Since(start)
 		p.mutex.Lock()
 		p.stats.SaveEventCalls++
 		p.stats.SaveEventDuration += duration
 		p.mutex.Unlock()
+
+		// Release semaphore only if it was acquired
+		if semaphoreAcquired {
+			<-p.writeSemaphore
+		}
 
 		if duration > 200*time.Millisecond {
 			log.Printf("🐌 SLOW SaveEvent (total): %v (event %s)", duration, evt.ID)
@@ -104,14 +111,18 @@ func (p *ProfiledEventStore) SaveEvent(ctx context.Context, evt *nostr.Event) er
 	select {
 	case p.writeSemaphore <- struct{}{}:
 		// Got semaphore, proceed with write
+		semaphoreAcquired = true
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	defer func() { <-p.writeSemaphore }() // Release semaphore
+
+	// Add a reasonable timeout for database operations
+	queryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 
 	// Execute database operation
 	dbStart := time.Now()
-	err := p.backend.SaveEvent(ctx, evt)
+	err := p.backend.SaveEvent(queryCtx, evt)
 	dbDuration := time.Since(dbStart)
 
 	p.mutex.Lock()
@@ -139,6 +150,8 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 
 	// Track performance - total time (including semaphore wait)
 	start := time.Now()
+	semaphoreAcquired := false
+
 	defer func() {
 		duration := time.Since(start)
 		p.mutex.Lock()
@@ -146,8 +159,10 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 		p.stats.QueryEventsDuration += duration
 		p.mutex.Unlock()
 
-		// Release semaphore
-		<-p.readSemaphore
+		// Release semaphore only if it was acquired
+		if semaphoreAcquired {
+			<-p.readSemaphore
+		}
 
 		if duration > 500*time.Millisecond {
 			log.Printf("🐌 SLOW QueryEvents (total): %v (filter: %+v)", duration, filter)
@@ -158,15 +173,20 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 	select {
 	case p.readSemaphore <- struct{}{}:
 		// Got semaphore, proceed with query
+		semaphoreAcquired = true
 	case <-ctx.Done():
 		closedCh := make(chan *nostr.Event)
 		close(closedCh)
 		return closedCh, ctx.Err()
 	}
 
+	// Add a reasonable timeout for database queries to prevent indefinite blocking
+	queryCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
 	// Execute query and measure pure DB time
 	dbStart := time.Now()
-	ch, err := p.backend.QueryEvents(ctx, filter)
+	ch, err := p.backend.QueryEvents(queryCtx, filter)
 	dbDuration := time.Since(dbStart)
 
 	p.mutex.Lock()
@@ -177,7 +197,12 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 		log.Printf("🐌 SLOW QueryEvents (DB only): %v (filter: %+v)", dbDuration, filter)
 	}
 	if err != nil {
-		log.Printf("❌ QueryEvents error: %v", err)
+		// Check if it's a context cancellation error
+		if ctx.Err() == context.Canceled || ctx.Err() == context.DeadlineExceeded {
+			log.Printf("⚠️ QueryEvents context canceled: %v", err)
+		} else {
+			log.Printf("❌ QueryEvents error: %v", err)
+		}
 		log.Printf("🔍 Filter details: %+v", filter)
 		closedCh := make(chan *nostr.Event)
 		close(closedCh)
@@ -191,12 +216,19 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 func (p *ProfiledEventStore) DeleteEvent(ctx context.Context, evt *nostr.Event) error {
 	// Start timing from caller's perspective (includes semaphore wait time)
 	start := time.Now()
+	semaphoreAcquired := false
+
 	defer func() {
 		duration := time.Since(start)
 		p.mutex.Lock()
 		p.stats.DeleteEventCalls++
 		p.stats.DeleteEventDuration += duration
 		p.mutex.Unlock()
+
+		// Release semaphore only if it was acquired
+		if semaphoreAcquired {
+			<-p.writeSemaphore
+		}
 
 		if duration > 200*time.Millisecond {
 			log.Printf("🐌 SLOW DeleteEvent (total): %v (event %s)", duration, evt.ID)
@@ -207,14 +239,18 @@ func (p *ProfiledEventStore) DeleteEvent(ctx context.Context, evt *nostr.Event) 
 	select {
 	case p.writeSemaphore <- struct{}{}:
 		// Got semaphore, proceed with write
+		semaphoreAcquired = true
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	defer func() { <-p.writeSemaphore }() // Release semaphore
+
+	// Add a reasonable timeout for database operations
+	queryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 
 	// Execute database operation
 	dbStart := time.Now()
-	err := p.backend.DeleteEvent(ctx, evt)
+	err := p.backend.DeleteEvent(queryCtx, evt)
 	dbDuration := time.Since(dbStart)
 
 	p.mutex.Lock()
@@ -232,12 +268,19 @@ func (p *ProfiledEventStore) DeleteEvent(ctx context.Context, evt *nostr.Event) 
 func (p *ProfiledEventStore) ReplaceEvent(ctx context.Context, evt *nostr.Event) error {
 	// Start timing from caller's perspective (includes semaphore wait time)
 	start := time.Now()
+	semaphoreAcquired := false
+
 	defer func() {
 		duration := time.Since(start)
 		p.mutex.Lock()
 		p.stats.ReplaceEventCalls++
 		p.stats.ReplaceEventDuration += duration
 		p.mutex.Unlock()
+
+		// Release semaphore only if it was acquired
+		if semaphoreAcquired {
+			<-p.writeSemaphore
+		}
 
 		if duration > 200*time.Millisecond {
 			log.Printf("🐌 SLOW ReplaceEvent (total): %v (event %s)", duration, evt.ID)
@@ -248,14 +291,18 @@ func (p *ProfiledEventStore) ReplaceEvent(ctx context.Context, evt *nostr.Event)
 	select {
 	case p.writeSemaphore <- struct{}{}:
 		// Got semaphore, proceed with write
+		semaphoreAcquired = true
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	defer func() { <-p.writeSemaphore }() // Release semaphore
+
+	// Add a reasonable timeout for database operations
+	queryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 
 	// Execute database operation
 	dbStart := time.Now()
-	err := p.backend.ReplaceEvent(ctx, evt)
+	err := p.backend.ReplaceEvent(queryCtx, evt)
 	dbDuration := time.Since(dbStart)
 
 	p.mutex.Lock()

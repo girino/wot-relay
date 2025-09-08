@@ -618,6 +618,12 @@ func main() {
 						"query_events_db_avg_ms":  perfStats.QueryEventsDBDuration.Milliseconds() / max(1, perfStats.QueryEventsCalls),
 						"delete_event_db_avg_ms":  perfStats.DeleteEventDBDuration.Milliseconds() / max(1, perfStats.DeleteEventCalls),
 						"replace_event_db_avg_ms": perfStats.ReplaceEventDBDuration.Milliseconds() / max(1, perfStats.ReplaceEventCalls),
+
+						// Semaphore usage
+						"write_semaphore_used": len(profiledDB.writeSemaphore),
+						"write_semaphore_cap":  cap(profiledDB.writeSemaphore),
+						"read_semaphore_used":  len(profiledDB.readSemaphore),
+						"read_semaphore_cap":   cap(profiledDB.readSemaphore),
 					}
 					logger.Info("STATS", "Profiled database stats found", map[string]interface{}{
 						"save_calls":   perfStats.SaveEventCalls,
@@ -979,7 +985,7 @@ func refreshProfiles(ctx context.Context) {
 		}
 
 		// Quick check with reasonable timeout
-		checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		checkCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		ch, err := wdb.QueryEvents(checkCtx, filter)
 		if err == nil {
 			for ev := range ch {
@@ -1029,7 +1035,7 @@ func refreshProfiles(ctx context.Context) {
 
 		// force cancel context every time
 		func() {
-			timeout, cancel := context.WithTimeout(ctx, 30*time.Second)
+			timeout, cancel := context.WithTimeout(ctx, 2*time.Minute)
 			defer cancel()
 
 			end := i + stepSize
@@ -1106,7 +1112,7 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 				}}
 
 				func() { // avoid "too many concurrent reqs" error
-					timeout, cancel := context.WithTimeout(ctx, 30*time.Second)
+					timeout, cancel := context.WithTimeout(ctx, 2*time.Minute)
 					defer cancel()
 					// Create temporary pool for this operation
 					tempPool := createTemporaryPool(ctx)
@@ -1561,7 +1567,7 @@ func optimizeDatabase(db *sqlite3.SQLite3Backend) error {
 		`PRAGMA optimize`,
 
 		// Increase cache size for better performance with large datasets
-		`PRAGMA cache_size = -64000`, // 64MB cache
+		`PRAGMA cache_size = -128000`, // 128MB cache (increased from 64MB)
 
 		// Enable WAL mode for better concurrency
 		`PRAGMA journal_mode = WAL`,
@@ -1576,7 +1582,13 @@ func optimizeDatabase(db *sqlite3.SQLite3Backend) error {
 		`PRAGMA synchronous = NORMAL`,
 
 		// Enable memory-mapped I/O for better performance
-		`PRAGMA mmap_size = 268435456`, // 256MB
+		`PRAGMA mmap_size = 536870912`, // 512MB (increased from 256MB)
+
+		// Increase busy timeout to handle concurrent access better
+		`PRAGMA busy_timeout = 30000`, // 30 seconds
+
+		// Set temp store to memory for better performance
+		`PRAGMA temp_store = MEMORY`,
 
 		// Analyze tables to help query planner
 		`ANALYZE`,
@@ -1599,7 +1611,7 @@ func getDB() sqlite3.SQLite3Backend {
 
 	// Add SQLite performance optimizations to URL
 	// WAL mode for better concurrency, larger cache, memory temp store, etc.
-	optimizedURL := fmt.Sprintf("%s?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=10000&_temp_store=MEMORY&_mmap_size=268435456&_busy_timeout=30000", dbPath)
+	optimizedURL := fmt.Sprintf("%s?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=20000&_temp_store=MEMORY&_mmap_size=536870912&_busy_timeout=60000&_timeout=30000", dbPath)
 
 	return sqlite3.SQLite3Backend{
 		DatabaseURL:       optimizedURL,
