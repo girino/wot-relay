@@ -129,22 +129,12 @@ func (p *ProfiledEventStore) SaveEvent(ctx context.Context, evt *nostr.Event) er
 func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filter) (chan *nostr.Event, error) {
 
 	// Validate filter to prevent empty tag set errors
-	if err := p.validateFilter(filter); err != nil {
+	if err := p.validateFilter(&filter); err != nil {
 		log.Printf("❌ QueryEvents error: %v", err)
 		log.Printf("🔍 Filter details: %+v", filter)
 		closedCh := make(chan *nostr.Event)
 		close(closedCh)
 		return closedCh, err
-	}
-
-	// Acquire read semaphore for concurrency control
-	select {
-	case p.readSemaphore <- struct{}{}:
-		// Got semaphore, proceed with query
-	case <-ctx.Done():
-		closedCh := make(chan *nostr.Event)
-		close(closedCh)
-		return closedCh, ctx.Err()
 	}
 
 	// Track performance - total time (including semaphore wait)
@@ -163,6 +153,16 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 			log.Printf("🐌 SLOW QueryEvents (total): %v (filter: %+v)", duration, filter)
 		}
 	}()
+
+	// Acquire read semaphore for concurrency control (now part of total timing)
+	select {
+	case p.readSemaphore <- struct{}{}:
+		// Got semaphore, proceed with query
+	case <-ctx.Done():
+		closedCh := make(chan *nostr.Event)
+		close(closedCh)
+		return closedCh, ctx.Err()
+	}
 
 	// Execute query and measure pure DB time
 	dbStart := time.Now()
@@ -378,13 +378,14 @@ func (p *ProfiledEventStore) Stats() interface{} {
 	return nil
 }
 
-// validateFilter checks for problematic filter configurations that cause database errors
-func (p *ProfiledEventStore) validateFilter(filter nostr.Filter) error {
-	// Check for empty tag arrays that cause "empty tag set" errors
+// validateFilter checks for problematic filter configurations and cleans them up
+func (p *ProfiledEventStore) validateFilter(filter *nostr.Filter) error {
+	// Remove empty tag arrays that cause "empty tag set" errors
 	if len(filter.Tags) > 0 {
 		for tagName, tagValues := range filter.Tags {
 			if len(tagValues) == 0 {
-				return fmt.Errorf("empty tag set for tag '%s'", tagName)
+				log.Printf("🧹 Removing empty tag '%s' from filter", tagName)
+				delete(filter.Tags, tagName)
 			}
 		}
 	}
