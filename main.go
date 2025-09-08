@@ -603,12 +603,20 @@ func main() {
 					// Get eventstore performance stats
 					perfStats := profiledDB.GetStats()
 					eventStoreStats = map[string]interface{}{
-						"save_event_calls":    perfStats.SaveEventCalls,
-						"save_event_avg_ms":   perfStats.SaveEventDuration.Milliseconds() / max(1, perfStats.SaveEventCalls),
-						"query_events_calls":  perfStats.QueryEventsCalls,
-						"query_events_avg_ms": perfStats.QueryEventsDuration.Milliseconds() / max(1, perfStats.QueryEventsCalls),
-						"delete_event_calls":  perfStats.DeleteEventCalls,
-						"delete_event_avg_ms": perfStats.DeleteEventDuration.Milliseconds() / max(1, perfStats.DeleteEventCalls),
+						// Total time (including semaphore wait time)
+						"save_event_calls":     perfStats.SaveEventCalls,
+						"save_event_avg_ms":    perfStats.SaveEventDuration.Milliseconds() / max(1, perfStats.SaveEventCalls),
+						"query_events_calls":   perfStats.QueryEventsCalls,
+						"query_events_avg_ms":  perfStats.QueryEventsDuration.Milliseconds() / max(1, perfStats.QueryEventsCalls),
+						"delete_event_calls":   perfStats.DeleteEventCalls,
+						"delete_event_avg_ms":  perfStats.DeleteEventDuration.Milliseconds() / max(1, perfStats.DeleteEventCalls),
+						"replace_event_calls":  perfStats.ReplaceEventCalls,
+						"replace_event_avg_ms": perfStats.ReplaceEventDuration.Milliseconds() / max(1, perfStats.ReplaceEventCalls),
+
+						// Pure database time (excluding semaphore wait time)
+						"save_event_db_avg_ms":    perfStats.SaveEventDBDuration.Milliseconds() / max(1, perfStats.SaveEventCalls),
+						"delete_event_db_avg_ms":  perfStats.DeleteEventDBDuration.Milliseconds() / max(1, perfStats.DeleteEventCalls),
+						"replace_event_db_avg_ms": perfStats.ReplaceEventDBDuration.Milliseconds() / max(1, perfStats.ReplaceEventCalls),
 					}
 					logger.Info("STATS", "Profiled database stats found", map[string]interface{}{
 						"save_calls":   perfStats.SaveEventCalls,
