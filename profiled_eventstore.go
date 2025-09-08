@@ -254,6 +254,7 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 	ch, err := p.backend.QueryEvents(ctx, filter)
 	if err != nil {
 		log.Printf("❌ QueryEvents error: %v", err)
+		log.Printf("🔍 Filter details: %+v", filter)
 		closedCh := make(chan *nostr.Event)
 		close(closedCh)
 		return closedCh, err
