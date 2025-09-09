@@ -22,6 +22,8 @@ import (
 	"github.com/fiatjaf/eventstore/sqlite3"
 	"github.com/fiatjaf/khatru"
 	"github.com/fiatjaf/khatru/policies"
+	"github.com/girino/wot-relay/internal/profiling"
+	"github.com/girino/wot-relay/internal/sqlite"
 	"github.com/joho/godotenv"
 	"github.com/nbd-wtf/go-nostr"
 )
@@ -399,19 +401,16 @@ func main() {
 	relay.Info.Software = "https://github.com/girino/wot-relay"
 	relay.Info.Version = version
 
-	db := getDB()
+	// Create optimized SQLite backend (implements eventstore.Store interface)
+	sqliteBackend := sqlite.NewOptimizedSQLiteBackend(config.DBPath)
+
+	// Create profiled event store wrapper (adds profiling to the backend)
+	db := profiling.NewProfiledEventStore(sqliteBackend)
 	if err := db.Init(); err != nil {
 		panic(err)
 	}
 
-	// Configure connection pooling and add custom indexes
-	if err := optimizeDatabase(&db); err != nil {
-		log.Printf("Warning: Database optimization failed: %v", err)
-	}
-
-	// Wrap the database with profiling
-	profiledDB := NewProfiledEventStore(&db)
-	wdb = eventstore.RelayWrapper{Store: profiledDB}
+	wdb = eventstore.RelayWrapper{Store: db}
 
 	relay.RejectEvent = append(relay.RejectEvent,
 		policies.RejectEventsWithBase64Media,
@@ -427,9 +426,9 @@ func main() {
 		policies.ConnectionRateLimiter(10, time.Minute*2, 30),
 	)
 
-	relay.StoreEvent = append(relay.StoreEvent, profiledDB.SaveEvent)
-	relay.QueryEvents = append(relay.QueryEvents, profiledDB.QueryEvents)
-	relay.DeleteEvent = append(relay.DeleteEvent, profiledDB.DeleteEvent)
+	relay.StoreEvent = append(relay.StoreEvent, db.SaveEvent)
+	relay.QueryEvents = append(relay.QueryEvents, db.QueryEvents)
+	relay.DeleteEvent = append(relay.DeleteEvent, db.DeleteEvent)
 	relay.RejectEvent = append(relay.RejectEvent, func(ctx context.Context, event *nostr.Event) (bool, string) {
 		// Don't reject events if we haven't booted yet or if trust network is empty
 		trustNetworkMutex.RLock()
@@ -599,7 +598,7 @@ func main() {
 				logger.Info("STATS", "Database store type", map[string]interface{}{
 					"store_type": fmt.Sprintf("%T", db.Store),
 				})
-				if profiledDB, ok := db.Store.(*ProfiledEventStore); ok {
+				if profiledDB, ok := db.Store.(*profiling.ProfiledEventStore); ok {
 					// Get eventstore performance stats
 					perfStats := profiledDB.GetStats()
 					eventStoreStats = map[string]interface{}{
@@ -620,10 +619,10 @@ func main() {
 						"replace_event_db_avg_ms": perfStats.ReplaceEventDBDuration.Milliseconds() / max(1, perfStats.ReplaceEventCalls),
 
 						// Semaphore usage
-						"write_semaphore_used": len(profiledDB.writeSemaphore),
-						"write_semaphore_cap":  cap(profiledDB.writeSemaphore),
-						"read_semaphore_used":  len(profiledDB.readSemaphore),
-						"read_semaphore_cap":   cap(profiledDB.readSemaphore),
+						"write_semaphore_used": len(profiledDB.WriteSemaphore),
+						"write_semaphore_cap":  cap(profiledDB.WriteSemaphore),
+						"read_semaphore_used":  len(profiledDB.ReadSemaphore),
+						"read_semaphore_cap":   cap(profiledDB.ReadSemaphore),
 					}
 					logger.Info("STATS", "Profiled database stats found", map[string]interface{}{
 						"save_calls":   perfStats.SaveEventCalls,
@@ -790,9 +789,9 @@ func monitorResources() {
 			// Database performance monitoring
 			if wdb != nil {
 				if db, ok := wdb.(eventstore.RelayWrapper); ok {
-					if profiledDB, ok := db.Store.(*ProfiledEventStore); ok {
+					if profiledDB, ok := db.Store.(*profiling.ProfiledEventStore); ok {
 						// Log eventstore performance stats
-						profiledDB.LogStats()
+						profiledDB.LogStats(logger)
 
 						// Also get SQLite connection stats
 						if sqliteDB, ok := profiledDB.GetBackend().(*sqlite3.SQLite3Backend); ok {
@@ -1223,7 +1222,7 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 		// Reset performance stats for clean metrics in next cycle
 		if wdb != nil {
 			if db, ok := wdb.(eventstore.RelayWrapper); ok {
-				if profiledDB, ok := db.Store.(*ProfiledEventStore); ok {
+				if profiledDB, ok := db.Store.(*profiling.ProfiledEventStore); ok {
 					profiledDB.ResetStats()
 				}
 			}
@@ -1506,121 +1505,6 @@ func deleteOldNotes(relay *khatru.Relay) error {
 	}
 
 	return nil
-}
-
-//	func getDB() badger.BadgerBackend {
-//		return badger.BadgerBackend{
-//			Path: getEnv("DB_PATH"),
-//		}
-//	}
-func optimizeDatabase(db *sqlite3.SQLite3Backend) error {
-	// Configure connection pooling for better performance
-	db.SetMaxOpenConns(25)                 // Maximum number of open connections
-	db.SetMaxIdleConns(5)                  // Maximum number of idle connections
-	db.SetConnMaxLifetime(5 * time.Minute) // Maximum connection lifetime
-
-	// Add custom indexes for specific query patterns used by the relay
-	customIndexes := []string{
-		// Primary composite index for most common query pattern: authors + kinds + time
-		// This covers queries like: WHERE pubkey IN (...) AND kind IN (...) ORDER BY created_at DESC
-		`CREATE INDEX IF NOT EXISTS authors_kinds_time_idx ON event(pubkey, kind, created_at DESC)`,
-
-		// Optimized index for WoT queries: kind 1984 + authors + time
-		// Covers: WHERE kind = 1984 AND pubkey IN (...) ORDER BY created_at DESC
-		`CREATE INDEX IF NOT EXISTS kind1984_authors_time_idx ON event(kind, pubkey, created_at DESC) WHERE kind = 1984`,
-
-		// Optimized index for profile queries: kind 0 + authors + time
-		// Covers: WHERE kind = 0 AND pubkey IN (...) ORDER BY created_at DESC
-		`CREATE INDEX IF NOT EXISTS kind0_authors_time_idx ON event(kind, pubkey, created_at DESC) WHERE kind = 0`,
-
-		// Optimized index for follow list queries: kind 3 + authors + time
-		// Covers: WHERE kind = 3 AND pubkey IN (...) ORDER BY created_at DESC
-		`CREATE INDEX IF NOT EXISTS kind3_authors_time_idx ON event(kind, pubkey, created_at DESC) WHERE kind = 3`,
-
-		// Index for time-based queries (used in deleteOldNotes and archiving)
-		`CREATE INDEX IF NOT EXISTS created_at_idx ON event(created_at)`,
-
-		// Index for pubkey-only queries (when no kind filter)
-		`CREATE INDEX IF NOT EXISTS pubkey_time_idx ON event(pubkey, created_at DESC)`,
-
-		// Index for kind-only queries (when no author filter)
-		`CREATE INDEX IF NOT EXISTS kind_time_idx ON event(kind, created_at DESC)`,
-
-		// Index for tag queries with #p tags (WoT queries)
-		`CREATE INDEX IF NOT EXISTS tags_p_idx ON event(tags) WHERE tags LIKE '%"#p"%'`,
-
-		// Index for complex multi-kind queries (archiving)
-		`CREATE INDEX IF NOT EXISTS multi_kind_time_idx ON event(kind, created_at DESC) WHERE kind IN (1,6,16,1984,9735,6969,1040,1010,1111)`,
-	}
-
-	log.Println("🔧 Adding custom database indexes...")
-	for i, idx := range customIndexes {
-		if _, err := db.Exec(idx); err != nil {
-			log.Printf("Warning: Failed to create index %d: %v", i+1, err)
-			// Continue with other indexes even if one fails
-		}
-	}
-
-	// Additional SQLite optimizations for better query performance
-	optimizationQueries := []string{
-		// Enable query planner optimizations
-		`PRAGMA optimize`,
-
-		// Increase cache size for better performance with large datasets
-		`PRAGMA cache_size = -128000`, // 128MB cache (increased from 64MB)
-
-		// Enable WAL mode for better concurrency
-		`PRAGMA journal_mode = WAL`,
-
-		// Increase page size for better I/O performance
-		`PRAGMA page_size = 4096`,
-
-		// Enable foreign key constraints (if needed)
-		`PRAGMA foreign_keys = ON`,
-
-		// Set synchronous mode for better performance (with some risk)
-		`PRAGMA synchronous = NORMAL`,
-
-		// Enable memory-mapped I/O for better performance
-		`PRAGMA mmap_size = 536870912`, // 512MB (increased from 256MB)
-
-		// Increase busy timeout to handle concurrent access better
-		`PRAGMA busy_timeout = 30000`, // 30 seconds
-
-		// Set temp store to memory for better performance
-		`PRAGMA temp_store = MEMORY`,
-
-		// Analyze tables to help query planner
-		`ANALYZE`,
-	}
-
-	log.Println("🔧 Applying SQLite performance optimizations...")
-	for i, query := range optimizationQueries {
-		if _, err := db.Exec(query); err != nil {
-			log.Printf("Warning: Failed to apply optimization %d: %v", i+1, err)
-			// Continue with other optimizations even if one fails
-		}
-	}
-
-	log.Println("✅ Database optimization completed")
-	return nil
-}
-
-func getDB() sqlite3.SQLite3Backend {
-	dbPath := getEnv("DB_PATH")
-
-	// Add SQLite performance optimizations to URL
-	// WAL mode for better concurrency, larger cache, memory temp store, etc.
-	optimizedURL := fmt.Sprintf("%s?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=20000&_temp_store=MEMORY&_mmap_size=536870912&_busy_timeout=60000&_timeout=30000", dbPath)
-
-	return sqlite3.SQLite3Backend{
-		DatabaseURL:       optimizedURL,
-		QueryLimit:        1000, // Increase from default 100
-		QueryIDsLimit:     2000, // Increase from default 500
-		QueryAuthorsLimit: 2000, // Increase from default 500
-		QueryKindsLimit:   50,   // Increase from default 10
-		QueryTagsLimit:    50,   // Increase from default 10
-	}
 }
 
 func splitAndTrim(input string) []string {

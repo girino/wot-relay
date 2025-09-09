@@ -1,4 +1,4 @@
-package main
+package profiling
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/fiatjaf/eventstore"
-	"github.com/fiatjaf/eventstore/sqlite3"
 	"github.com/nbd-wtf/go-nostr"
 )
 
@@ -60,28 +59,28 @@ type DatabaseOperation struct {
 
 // ProfiledEventStore wraps an eventstore with performance profiling and semaphore-based concurrency
 type ProfiledEventStore struct {
-	backend eventstore.Store
-	stats   *EventStoreStats
-	mutex   sync.RWMutex
+	eventstore.Store
+	stats *EventStoreStats
+	mutex sync.RWMutex
 
 	// Concurrency control using semaphores
-	writeSemaphore chan struct{} // Serialized writes (1 slot)
-	readSemaphore  chan struct{} // Concurrent reads (5 slots)
+	WriteSemaphore chan struct{} // Serialized writes (1 slot)
+	ReadSemaphore  chan struct{} // Concurrent reads (5 slots)
 }
 
 // NewProfiledEventStore creates a new ProfiledEventStore with semaphore-based concurrency
 func NewProfiledEventStore(backend eventstore.Store) *ProfiledEventStore {
 	return &ProfiledEventStore{
-		backend:        backend,
+		Store:          backend,
 		stats:          &EventStoreStats{},
-		writeSemaphore: make(chan struct{}, 1), // Serialized writes (1 slot)
-		readSemaphore:  make(chan struct{}, 5), // Concurrent reads (5 slots)
+		WriteSemaphore: make(chan struct{}, 1), // Serialized writes (1 slot)
+		ReadSemaphore:  make(chan struct{}, 5), // Concurrent reads (5 slots)
 	}
 }
 
 // GetBackend returns the underlying eventstore backend
 func (p *ProfiledEventStore) GetBackend() eventstore.Store {
-	return p.backend
+	return p.Store
 }
 
 // SaveEvent profiles the SaveEvent method
@@ -99,7 +98,7 @@ func (p *ProfiledEventStore) SaveEvent(ctx context.Context, evt *nostr.Event) er
 
 		// Release semaphore only if it was acquired
 		if semaphoreAcquired {
-			<-p.writeSemaphore
+			<-p.WriteSemaphore
 		}
 
 		if duration > 200*time.Millisecond {
@@ -109,7 +108,7 @@ func (p *ProfiledEventStore) SaveEvent(ctx context.Context, evt *nostr.Event) er
 
 	// Acquire write semaphore for serialized access
 	select {
-	case p.writeSemaphore <- struct{}{}:
+	case p.WriteSemaphore <- struct{}{}:
 		// Got semaphore, proceed with write
 		semaphoreAcquired = true
 	case <-ctx.Done():
@@ -122,7 +121,7 @@ func (p *ProfiledEventStore) SaveEvent(ctx context.Context, evt *nostr.Event) er
 
 	// Execute database operation
 	dbStart := time.Now()
-	err := p.backend.SaveEvent(queryCtx, evt)
+	err := p.Store.SaveEvent(queryCtx, evt)
 	dbDuration := time.Since(dbStart)
 
 	p.mutex.Lock()
@@ -161,7 +160,7 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 
 		// Release semaphore only if it was acquired
 		if semaphoreAcquired {
-			<-p.readSemaphore
+			<-p.ReadSemaphore
 		}
 
 		if duration > 500*time.Millisecond {
@@ -171,7 +170,7 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 
 	// Acquire read semaphore for concurrency control (now part of total timing)
 	select {
-	case p.readSemaphore <- struct{}{}:
+	case p.ReadSemaphore <- struct{}{}:
 		// Got semaphore, proceed with query
 		semaphoreAcquired = true
 	case <-ctx.Done():
@@ -186,7 +185,7 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 
 	// Execute query and measure pure DB time
 	dbStart := time.Now()
-	ch, err := p.backend.QueryEvents(queryCtx, filter)
+	ch, err := p.Store.QueryEvents(queryCtx, filter)
 	dbDuration := time.Since(dbStart)
 
 	p.mutex.Lock()
@@ -227,7 +226,7 @@ func (p *ProfiledEventStore) DeleteEvent(ctx context.Context, evt *nostr.Event) 
 
 		// Release semaphore only if it was acquired
 		if semaphoreAcquired {
-			<-p.writeSemaphore
+			<-p.WriteSemaphore
 		}
 
 		if duration > 200*time.Millisecond {
@@ -237,7 +236,7 @@ func (p *ProfiledEventStore) DeleteEvent(ctx context.Context, evt *nostr.Event) 
 
 	// Acquire write semaphore for serialized access
 	select {
-	case p.writeSemaphore <- struct{}{}:
+	case p.WriteSemaphore <- struct{}{}:
 		// Got semaphore, proceed with write
 		semaphoreAcquired = true
 	case <-ctx.Done():
@@ -250,7 +249,7 @@ func (p *ProfiledEventStore) DeleteEvent(ctx context.Context, evt *nostr.Event) 
 
 	// Execute database operation
 	dbStart := time.Now()
-	err := p.backend.DeleteEvent(queryCtx, evt)
+	err := p.Store.DeleteEvent(queryCtx, evt)
 	dbDuration := time.Since(dbStart)
 
 	p.mutex.Lock()
@@ -279,7 +278,7 @@ func (p *ProfiledEventStore) ReplaceEvent(ctx context.Context, evt *nostr.Event)
 
 		// Release semaphore only if it was acquired
 		if semaphoreAcquired {
-			<-p.writeSemaphore
+			<-p.WriteSemaphore
 		}
 
 		if duration > 200*time.Millisecond {
@@ -289,7 +288,7 @@ func (p *ProfiledEventStore) ReplaceEvent(ctx context.Context, evt *nostr.Event)
 
 	// Acquire write semaphore for serialized access
 	select {
-	case p.writeSemaphore <- struct{}{}:
+	case p.WriteSemaphore <- struct{}{}:
 		// Got semaphore, proceed with write
 		semaphoreAcquired = true
 	case <-ctx.Done():
@@ -302,7 +301,7 @@ func (p *ProfiledEventStore) ReplaceEvent(ctx context.Context, evt *nostr.Event)
 
 	// Execute database operation
 	dbStart := time.Now()
-	err := p.backend.ReplaceEvent(queryCtx, evt)
+	err := p.Store.ReplaceEvent(queryCtx, evt)
 	dbDuration := time.Since(dbStart)
 
 	p.mutex.Lock()
@@ -329,7 +328,7 @@ func (p *ProfiledEventStore) Init() error {
 		log.Printf("📊 Init took: %v", duration)
 	}()
 
-	return p.backend.Init()
+	return p.Store.Init()
 }
 
 // Close profiles the Close method
@@ -345,7 +344,7 @@ func (p *ProfiledEventStore) Close() {
 		log.Printf("📊 Close took: %v", duration)
 	}()
 
-	p.backend.Close()
+	p.Store.Close()
 }
 
 // GetStats returns current performance statistics
@@ -384,43 +383,49 @@ func (p *ProfiledEventStore) ResetStats() {
 }
 
 // LogStats logs the current performance statistics
-func (p *ProfiledEventStore) LogStats() {
+func (p *ProfiledEventStore) LogStats(logger interface{}) {
 	p.mutex.RLock()
 	defer p.mutex.RUnlock()
 
-	logger.Info("MONITOR", "EventStore Performance Stats", map[string]interface{}{
-		// Total time (including semaphore wait time)
-		"save_event_calls":     p.stats.SaveEventCalls,
-		"save_event_avg_ms":    p.stats.SaveEventDuration.Milliseconds() / max(1, p.stats.SaveEventCalls),
-		"query_events_calls":   p.stats.QueryEventsCalls,
-		"query_events_avg_ms":  p.stats.QueryEventsDuration.Milliseconds() / max(1, p.stats.QueryEventsCalls),
-		"delete_event_calls":   p.stats.DeleteEventCalls,
-		"delete_event_avg_ms":  p.stats.DeleteEventDuration.Milliseconds() / max(1, p.stats.DeleteEventCalls),
-		"replace_event_calls":  p.stats.ReplaceEventCalls,
-		"replace_event_avg_ms": p.stats.ReplaceEventDuration.Milliseconds() / max(1, p.stats.ReplaceEventCalls),
-		"init_calls":           p.stats.InitCalls,
-		"init_avg_ms":          p.stats.InitDuration.Milliseconds() / max(1, p.stats.InitCalls),
-		"close_calls":          p.stats.CloseCalls,
-		"close_avg_ms":         p.stats.CloseDuration.Milliseconds() / max(1, p.stats.CloseCalls),
+	// Use type assertion to check if logger has Info method
+	if l, ok := logger.(interface {
+		Info(component, message string, fields ...map[string]interface{})
+	}); ok {
+		l.Info("MONITOR", "EventStore Performance Stats", map[string]interface{}{
+			// Total time (including semaphore wait time)
+			"save_event_calls":     p.stats.SaveEventCalls,
+			"save_event_avg_ms":    p.stats.SaveEventDuration.Milliseconds() / max(1, p.stats.SaveEventCalls),
+			"query_events_calls":   p.stats.QueryEventsCalls,
+			"query_events_avg_ms":  p.stats.QueryEventsDuration.Milliseconds() / max(1, p.stats.QueryEventsCalls),
+			"delete_event_calls":   p.stats.DeleteEventCalls,
+			"delete_event_avg_ms":  p.stats.DeleteEventDuration.Milliseconds() / max(1, p.stats.DeleteEventCalls),
+			"replace_event_calls":  p.stats.ReplaceEventCalls,
+			"replace_event_avg_ms": p.stats.ReplaceEventDuration.Milliseconds() / max(1, p.stats.ReplaceEventCalls),
+			"init_calls":           p.stats.InitCalls,
+			"init_avg_ms":          p.stats.InitDuration.Milliseconds() / max(1, p.stats.InitCalls),
+			"close_calls":          p.stats.CloseCalls,
+			"close_avg_ms":         p.stats.CloseDuration.Milliseconds() / max(1, p.stats.CloseCalls),
 
-		// Pure database time (excluding semaphore wait time)
-		"save_event_db_avg_ms":    p.stats.SaveEventDBDuration.Milliseconds() / max(1, p.stats.SaveEventCalls),
-		"query_events_db_avg_ms":  p.stats.QueryEventsDBDuration.Milliseconds() / max(1, p.stats.QueryEventsCalls),
-		"delete_event_db_avg_ms":  p.stats.DeleteEventDBDuration.Milliseconds() / max(1, p.stats.DeleteEventCalls),
-		"replace_event_db_avg_ms": p.stats.ReplaceEventDBDuration.Milliseconds() / max(1, p.stats.ReplaceEventCalls),
+			// Pure database time (excluding semaphore wait time)
+			"save_event_db_avg_ms":    p.stats.SaveEventDBDuration.Milliseconds() / max(1, p.stats.SaveEventCalls),
+			"query_events_db_avg_ms":  p.stats.QueryEventsDBDuration.Milliseconds() / max(1, p.stats.QueryEventsCalls),
+			"delete_event_db_avg_ms":  p.stats.DeleteEventDBDuration.Milliseconds() / max(1, p.stats.DeleteEventCalls),
+			"replace_event_db_avg_ms": p.stats.ReplaceEventDBDuration.Milliseconds() / max(1, p.stats.ReplaceEventCalls),
 
-		// Semaphore usage
-		"write_semaphore_used": len(p.writeSemaphore),
-		"write_semaphore_cap":  cap(p.writeSemaphore),
-		"read_semaphore_used":  len(p.readSemaphore),
-		"read_semaphore_cap":   cap(p.readSemaphore),
-	})
+			// Semaphore usage
+			"write_semaphore_used": len(p.WriteSemaphore),
+			"write_semaphore_cap":  cap(p.WriteSemaphore),
+			"read_semaphore_used":  len(p.ReadSemaphore),
+			"read_semaphore_cap":   cap(p.ReadSemaphore),
+		})
+	}
 }
 
 // Stats returns database statistics from the underlying backend
 func (p *ProfiledEventStore) Stats() interface{} {
-	if sqliteBackend, ok := p.backend.(*sqlite3.SQLite3Backend); ok {
-		return sqliteBackend.Stats()
+	// Check if the backend has a Stats method
+	if statsBackend, ok := p.Store.(interface{ Stats() interface{} }); ok {
+		return statsBackend.Stats()
 	}
 	return nil
 }
@@ -450,4 +455,12 @@ func (p *ProfiledEventStore) validateFilter(filter *nostr.Filter) error {
 	}
 
 	return nil
+}
+
+// max returns the maximum of two int64 values
+func max(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
