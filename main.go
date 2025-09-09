@@ -22,8 +22,8 @@ import (
 	"github.com/fiatjaf/eventstore/sqlite3"
 	"github.com/fiatjaf/khatru"
 	"github.com/fiatjaf/khatru/policies"
-	"github.com/girino/wot-relay/internal/profiling"
-	"github.com/girino/wot-relay/internal/sqlite"
+	"github.com/girino/wot-relay/pkg/profiling"
+	"github.com/girino/wot-relay/pkg/sqlite"
 	"github.com/joho/godotenv"
 	"github.com/nbd-wtf/go-nostr"
 )
