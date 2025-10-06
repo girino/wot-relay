@@ -200,6 +200,9 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 	if queryCtx.Err() == context.Canceled {
 		log.Printf("⚠️ QueryEvents context canceled: %v", queryCtx.Err())
 	}
+	if err != nil {
+		log.Printf("❌ QueryEvents error: %v", err)
+	}
 
 	if dbDuration > 200*time.Millisecond {
 		log.Printf("🐌 SLOW QueryEvents (DB only): %v (filter: %+v)", dbDuration, filter)
