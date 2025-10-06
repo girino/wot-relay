@@ -176,6 +176,7 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 	case <-ctx.Done():
 		closedCh := make(chan *nostr.Event)
 		close(closedCh)
+		log.Printf("❌ QueryEvents context canceled: %v", ctx.Err())
 		return closedCh, ctx.Err()
 	}
 
@@ -191,6 +192,14 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 	p.mutex.Lock()
 	p.stats.QueryEventsDBDuration += dbDuration
 	p.mutex.Unlock()
+
+	// check if context timed out
+	if queryCtx.Err() == context.DeadlineExceeded {
+		log.Printf("⚠️ QueryEvents context timed out: %v", queryCtx.Err())
+	}
+	if queryCtx.Err() == context.Canceled {
+		log.Printf("⚠️ QueryEvents context canceled: %v", queryCtx.Err())
+	}
 
 	if dbDuration > 200*time.Millisecond {
 		log.Printf("🐌 SLOW QueryEvents (DB only): %v (filter: %+v)", dbDuration, filter)
