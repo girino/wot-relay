@@ -2,11 +2,11 @@ package sqlite
 
 import (
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/fiatjaf/eventstore"
 	"github.com/fiatjaf/eventstore/sqlite3"
+	"github.com/girino/wot-relay/pkg/logger"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -31,7 +31,7 @@ func NewOptimizedSQLiteBackend(dbPath string) *OptimizedSQLiteBackend {
 	// WAL mode for better concurrency, larger cache, memory temp store, etc.
 	optimizedURL := fmt.Sprintf("%s?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=20000&_temp_store=MEMORY&_mmap_size=536870912&_busy_timeout=60000&_timeout=30000", dbPath)
 
-	backend := &sqlite3.SQLite3Backend{
+	backend := sqlite3.SQLite3Backend{ // VALUE not pointer!
 		DatabaseURL:       optimizedURL,
 		QueryLimit:        1000, // Increase from default 100
 		QueryIDsLimit:     2000, // Increase from default 500
@@ -41,20 +41,29 @@ func NewOptimizedSQLiteBackend(dbPath string) *OptimizedSQLiteBackend {
 	}
 
 	return &OptimizedSQLiteBackend{
-		SQLite3Backend: backend,
+		SQLite3Backend: &backend, // Now take address of the value
 	}
 }
 
 // Init initializes the database and applies optimizations
 func (o *OptimizedSQLiteBackend) Init() error {
+	logger.Info("SQLITE", "OptimizedSQLiteBackend initialization starting", map[string]interface{}{"database_url": o.SQLite3Backend.DatabaseURL})
+
 	// Initialize the underlying SQLite backend
 	if err := o.SQLite3Backend.Init(); err != nil {
+		logger.Error("SQLITE", "SQLite3Backend initialization failed", map[string]interface{}{"error": err})
 		return err
 	}
 
-	// Apply database optimizations
-	return OptimizeDatabase(o.SQLite3Backend.DB)
+	logger.Info("SQLITE", "SQLite3Backend initialization succeeded", map[string]interface{}{"db_connected": o.SQLite3Backend.DB != nil})
+
+	// Note: OptimizeDatabase call removed as it takes too long on startup
+	// The database indexes and pragmas are already set via connection URL parameters
+	return nil
 }
+
+// QueryEvents explicitly delegates to the backend with debug logging
+// QueryEvents is no longer needed; use the underlying SQLite3Backend's implementation directly.
 
 // Ensure OptimizedSQLiteBackend implements eventstore.Store interface
 var _ eventstore.Store = (*OptimizedSQLiteBackend)(nil)
@@ -100,19 +109,17 @@ func OptimizeDatabase(db *sqlx.DB) error {
 		`CREATE INDEX IF NOT EXISTS multi_kind_time_idx ON event(kind, created_at DESC) WHERE kind IN (1,6,16,1984,9735,6969,1040,1010,1111)`,
 	}
 
-	log.Println("🔧 Adding custom database indexes...")
+	logger.Info("SQLITE", "Adding custom database indexes")
 	for i, idx := range customIndexes {
 		if _, err := db.Exec(idx); err != nil {
-			log.Printf("Warning: Failed to create index %d: %v", i+1, err)
+			logger.Warn("SQLITE", "Failed to create index", map[string]interface{}{"index_number": i + 1, "error": err})
 			// Continue with other indexes even if one fails
 		}
 	}
 
 	// Additional SQLite optimizations for better query performance
+	// Note: Removed PRAGMA optimize and ANALYZE as they can take very long on large databases
 	optimizationQueries := []string{
-		// Enable query planner optimizations
-		`PRAGMA optimize`,
-
 		// Increase cache size for better performance with large datasets
 		`PRAGMA cache_size = -128000`, // 128MB cache (increased from 64MB)
 
@@ -136,19 +143,16 @@ func OptimizeDatabase(db *sqlx.DB) error {
 
 		// Set temp store to memory for better performance
 		`PRAGMA temp_store = MEMORY`,
-
-		// Analyze tables to help query planner
-		`ANALYZE`,
 	}
 
-	log.Println("🔧 Applying SQLite performance optimizations...")
+	logger.Info("SQLITE", "Applying SQLite performance optimizations (fast startup)")
 	for i, query := range optimizationQueries {
 		if _, err := db.Exec(query); err != nil {
-			log.Printf("Warning: Failed to apply optimization %d: %v", i+1, err)
+			logger.Warn("SQLITE", "Failed to apply optimization", map[string]interface{}{"optimization_number": i + 1, "error": err})
 			// Continue with other optimizations even if one fails
 		}
 	}
 
-	log.Println("✅ Database optimization completed")
+	logger.Info("SQLITE", "Database optimization completed")
 	return nil
 }

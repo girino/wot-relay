@@ -3,11 +3,11 @@ package profiling
 import (
 	"context"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
 	"github.com/fiatjaf/eventstore"
+	"github.com/girino/wot-relay/pkg/logger"
 	"github.com/nbd-wtf/go-nostr"
 )
 
@@ -65,7 +65,7 @@ type ProfiledEventStore struct {
 
 	// Concurrency control using semaphores
 	WriteSemaphore chan struct{} // Serialized writes (1 slot)
-	ReadSemaphore  chan struct{} // Concurrent reads (5 slots)
+	ReadSemaphore  chan struct{} // Concurrent reads (6 slots)
 }
 
 // NewProfiledEventStore creates a new ProfiledEventStore with semaphore-based concurrency
@@ -74,7 +74,7 @@ func NewProfiledEventStore(backend eventstore.Store) *ProfiledEventStore {
 		Store:          backend,
 		stats:          &EventStoreStats{},
 		WriteSemaphore: make(chan struct{}, 1), // Serialized writes (1 slot)
-		ReadSemaphore:  make(chan struct{}, 5), // Concurrent reads (5 slots)
+		ReadSemaphore:  make(chan struct{}, 6), // Concurrent reads (6 slots)
 	}
 }
 
@@ -102,7 +102,7 @@ func (p *ProfiledEventStore) SaveEvent(ctx context.Context, evt *nostr.Event) er
 		}
 
 		if duration > 200*time.Millisecond {
-			log.Printf("🐌 SLOW SaveEvent (total): %v (event %s)", duration, evt.ID)
+			logger.Warn("PROFILING", "Slow SaveEvent (total)", map[string]interface{}{"duration": duration, "event_id": evt.ID})
 		}
 	}()
 
@@ -129,98 +129,98 @@ func (p *ProfiledEventStore) SaveEvent(ctx context.Context, evt *nostr.Event) er
 	p.mutex.Unlock()
 
 	if dbDuration > 100*time.Millisecond {
-		log.Printf("🐌 SLOW SaveEvent (DB only): %v (event %s)", dbDuration, evt.ID)
+		logger.Warn("PROFILING", "Slow SaveEvent (DB only)", map[string]interface{}{"duration": dbDuration, "event_id": evt.ID})
 	}
 
 	return err
 }
 
-// QueryEvents profiles the QueryEvents method with concurrent access
+// QueryEvents profiles the QueryEvents method with proper timing for async channels
 func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filter) (chan *nostr.Event, error) {
-
 	// Validate filter to prevent empty tag set errors
 	if err := p.validateFilter(&filter); err != nil {
-		log.Printf("❌ QueryEvents error: %v", err)
-		log.Printf("🔍 Filter details: %+v", filter)
+		logger.Error("PROFILING", "QueryEvents validation failed", map[string]interface{}{"error": err, "filter": filter})
 		closedCh := make(chan *nostr.Event)
 		close(closedCh)
 		return closedCh, err
 	}
 
-	// Track performance - total time (including semaphore wait)
-	start := time.Now()
-	semaphoreAcquired := false
+	// Create the wrapper channel
+	wrappedCh := make(chan *nostr.Event)
 
-	defer func() {
-		duration := time.Since(start)
-		p.mutex.Lock()
-		p.stats.QueryEventsCalls++
-		p.stats.QueryEventsDuration += duration
-		p.mutex.Unlock()
+	go func() {
+		defer close(wrappedCh)
 
-		// Release semaphore only if it was acquired
-		if semaphoreAcquired {
-			<-p.ReadSemaphore
+		// Acquire semaphore to control concurrency (default: 6 simultaneous calls)
+		select {
+		case p.ReadSemaphore <- struct{}{}:
+			// Got semaphore, proceed with query
+		case <-ctx.Done():
+			logger.Error("PROFILING", "QueryEvents context canceled before semaphore", map[string]interface{}{"error": ctx.Err()})
+			return
 		}
 
-		if duration > 500*time.Millisecond {
-			log.Printf("🐌 SLOW QueryEvents (total): %v (filter: %+v)", duration, filter)
+		// Release semaphore when goroutine completes
+		defer func() {
+			<-p.ReadSemaphore
+		}()
+
+		// Get the backend channel
+		ch, err := p.Store.QueryEvents(ctx, filter)
+		if err != nil {
+			logger.Error("PROFILING", "QueryEvents backend error", map[string]interface{}{"error": err, "filter": filter})
+			return
+		}
+
+		queryStart := time.Now()
+		eventCount := 0
+		firstEventTime := time.Time{}
+		dbQueryTime := time.Duration(0)
+
+		// Read all events from the backend channel
+		for evt := range ch {
+			eventCount++
+
+			// Measure time to first event (true DB query time)
+			if firstEventTime.IsZero() {
+				firstEventTime = time.Now()
+				dbQueryTime = firstEventTime.Sub(queryStart)
+
+				if dbQueryTime > 200*time.Millisecond {
+					logger.Warn("PROFILING", "Slow QueryEvents (DB time)", map[string]interface{}{"db_time": dbQueryTime, "filter": filter})
+				}
+			}
+
+			wrappedCh <- evt
+		}
+
+		// Calculate total time for the complete operation
+		totalTime := time.Since(queryStart)
+
+		// If no events were returned, dbQueryTime is the same as totalTime
+		if eventCount == 0 {
+			dbQueryTime = totalTime
+		}
+
+		// Update stats with both metrics
+		p.mutex.Lock()
+		p.stats.QueryEventsCalls++
+		p.stats.QueryEventsDuration += totalTime     // Total operation time
+		p.stats.QueryEventsDBDuration += dbQueryTime // Time to first event (DB query time)
+		p.mutex.Unlock()
+
+		// Log slow queries based on DB query time (time to first event)
+		if dbQueryTime > 200*time.Millisecond {
+			logger.Warn("PROFILING", "Slow QueryEvents", map[string]interface{}{
+				"db_time":     dbQueryTime,
+				"total_time":  totalTime,
+				"event_count": eventCount,
+				"filter":      filter,
+			})
 		}
 	}()
 
-	// Acquire read semaphore for concurrency control (now part of total timing)
-	select {
-	case p.ReadSemaphore <- struct{}{}:
-		// Got semaphore, proceed with query
-		semaphoreAcquired = true
-	case <-ctx.Done():
-		closedCh := make(chan *nostr.Event)
-		close(closedCh)
-		log.Printf("❌ QueryEvents context canceled: %v", ctx.Err())
-		return closedCh, ctx.Err()
-	}
-
-	// Add a reasonable timeout for database queries to prevent indefinite blocking
-	queryCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
-
-	// Execute query and measure pure DB time
-	dbStart := time.Now()
-	ch, err := p.Store.QueryEvents(queryCtx, filter)
-	dbDuration := time.Since(dbStart)
-
-	p.mutex.Lock()
-	p.stats.QueryEventsDBDuration += dbDuration
-	p.mutex.Unlock()
-
-	// check if context timed out
-	if queryCtx.Err() == context.DeadlineExceeded {
-		log.Printf("⚠️ QueryEvents context timed out: %v", queryCtx.Err())
-	}
-	if queryCtx.Err() == context.Canceled {
-		log.Printf("⚠️ QueryEvents context canceled: %v", queryCtx.Err())
-	}
-	if err != nil {
-		log.Printf("❌ QueryEvents error: %v", err)
-	}
-
-	if dbDuration > 200*time.Millisecond {
-		log.Printf("🐌 SLOW QueryEvents (DB only): %v (filter: %+v)", dbDuration, filter)
-	}
-	if err != nil {
-		// Check if it's a context cancellation error
-		if ctx.Err() == context.Canceled || ctx.Err() == context.DeadlineExceeded {
-			log.Printf("⚠️ QueryEvents context canceled: %v", err)
-		} else {
-			log.Printf("❌ QueryEvents error: %v", err)
-		}
-		log.Printf("🔍 Filter details: %+v", filter)
-		closedCh := make(chan *nostr.Event)
-		close(closedCh)
-		return closedCh, err
-	}
-
-	return ch, nil
+	return wrappedCh, nil
 }
 
 // DeleteEvent profiles the DeleteEvent method
@@ -242,7 +242,7 @@ func (p *ProfiledEventStore) DeleteEvent(ctx context.Context, evt *nostr.Event) 
 		}
 
 		if duration > 200*time.Millisecond {
-			log.Printf("🐌 SLOW DeleteEvent (total): %v (event %s)", duration, evt.ID)
+			logger.Warn("PROFILING", "Slow DeleteEvent (total)", map[string]interface{}{"duration": duration, "event_id": evt.ID})
 		}
 	}()
 
@@ -269,7 +269,7 @@ func (p *ProfiledEventStore) DeleteEvent(ctx context.Context, evt *nostr.Event) 
 	p.mutex.Unlock()
 
 	if dbDuration > 100*time.Millisecond {
-		log.Printf("🐌 SLOW DeleteEvent (DB only): %v (event %s)", dbDuration, evt.ID)
+		logger.Warn("PROFILING", "Slow DeleteEvent (DB only)", map[string]interface{}{"duration": dbDuration, "event_id": evt.ID})
 	}
 
 	return err
@@ -294,7 +294,7 @@ func (p *ProfiledEventStore) ReplaceEvent(ctx context.Context, evt *nostr.Event)
 		}
 
 		if duration > 200*time.Millisecond {
-			log.Printf("🐌 SLOW ReplaceEvent (total): %v (event %s)", duration, evt.ID)
+			logger.Warn("PROFILING", "Slow ReplaceEvent (total)", map[string]interface{}{"duration": duration, "event_id": evt.ID})
 		}
 	}()
 
@@ -321,7 +321,7 @@ func (p *ProfiledEventStore) ReplaceEvent(ctx context.Context, evt *nostr.Event)
 	p.mutex.Unlock()
 
 	if dbDuration > 100*time.Millisecond {
-		log.Printf("🐌 SLOW ReplaceEvent (DB only): %v (event %s)", dbDuration, evt.ID)
+		logger.Warn("PROFILING", "Slow ReplaceEvent (DB only)", map[string]interface{}{"duration": dbDuration, "event_id": evt.ID})
 	}
 
 	return err
@@ -337,7 +337,7 @@ func (p *ProfiledEventStore) Init() error {
 		p.stats.InitDuration += duration
 		p.mutex.Unlock()
 
-		log.Printf("📊 Init took: %v", duration)
+		logger.Info("PROFILING", "Init completed", map[string]interface{}{"duration": duration})
 	}()
 
 	return p.Store.Init()
@@ -353,7 +353,7 @@ func (p *ProfiledEventStore) Close() {
 		p.stats.CloseDuration += duration
 		p.mutex.Unlock()
 
-		log.Printf("📊 Close took: %v", duration)
+		logger.Info("PROFILING", "Close completed", map[string]interface{}{"duration": duration})
 	}()
 
 	p.Store.Close()
@@ -391,7 +391,7 @@ func (p *ProfiledEventStore) ResetStats() {
 	p.stats.DeleteEventDBDuration = 0
 	p.stats.ReplaceEventDBDuration = 0
 
-	log.Printf("📊 EventStore stats reset for new cycle")
+	logger.Info("PROFILING", "EventStore stats reset for new cycle")
 }
 
 // LogStats logs the current performance statistics
@@ -448,7 +448,7 @@ func (p *ProfiledEventStore) validateFilter(filter *nostr.Filter) error {
 	if len(filter.Tags) > 0 {
 		for tagName, tagValues := range filter.Tags {
 			if len(tagValues) == 0 {
-				log.Printf("🧹 Removing empty tag '%s' from filter", tagName)
+				logger.Debug("PROFILING", "Removing empty tag from filter", map[string]interface{}{"tag_name": tagName})
 				delete(filter.Tags, tagName)
 			}
 		}
