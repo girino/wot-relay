@@ -73,8 +73,8 @@ func NewProfiledEventStore(backend eventstore.Store) *ProfiledEventStore {
 	return &ProfiledEventStore{
 		Store:          backend,
 		stats:          &EventStoreStats{},
-		WriteSemaphore: make(chan struct{}, 1), // Serialized writes (1 slot)
-		ReadSemaphore:  make(chan struct{}, 6), // Concurrent reads (6 slots)
+		WriteSemaphore: make(chan struct{}, 1),  // Serialized writes (1 slot)
+		ReadSemaphore:  make(chan struct{}, 32), // Concurrent reads (32 slots)
 	}
 }
 
@@ -168,8 +168,10 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 	// Create the wrapper channel
 	wrappedCh := make(chan *nostr.Event)
 
+	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, 30*time.Second)
 	go func() {
 		defer close(wrappedCh)
+		defer timeoutCancel()
 
 		// total time starts before semaphore is acquired.
 		totalTimeStart := time.Now()
@@ -180,6 +182,9 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 			// Got semaphore, proceed with query
 		case <-ctx.Done():
 			logger.Error("PROFILING", "QueryEvents context canceled before semaphore", map[string]interface{}{"error": ctx.Err(), "filter": filter})
+			return
+		case <-timeoutCtx.Done():
+			logger.Error("PROFILING", "QueryEvents timeout", map[string]interface{}{"error": timeoutCtx.Err(), "filter": filter})
 			return
 		}
 
@@ -195,27 +200,40 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 		firstEvent := true
 
 		// Get the backend channel
-		ch, err := p.Store.QueryEvents(ctx, filter)
+		ch, err := p.Store.QueryEvents(timeoutCtx, filter)
 		if err != nil {
 			logger.Error("PROFILING", "QueryEvents backend error", map[string]interface{}{"error": err, "filter": filter})
 			return
 		}
 
 		// Read all events from the backend channel
-		for evt := range ch {
-			eventCount++
-
-			// Measure time to first event (true DB query time)
-			if firstEvent {
-				firstEvent = false
-				dbQueryTime = time.Since(queryStart)
-
-				if dbQueryTime > 200*time.Millisecond {
-					logger.Warn("PROFILING", "Slow QueryEvents (DB time)", map[string]interface{}{"db_time": humanizeDuration(dbQueryTime), "filter": filter})
+	loop:
+		for {
+			select {
+			case evt, ok := <-ch:
+				if !ok {
+					break loop
 				}
-			}
+				eventCount++
 
-			wrappedCh <- evt
+				// Measure time to first event (true DB query time)
+				if firstEvent {
+					firstEvent = false
+					dbQueryTime = time.Since(queryStart)
+
+					if dbQueryTime > 200*time.Millisecond {
+						logger.Warn("PROFILING", "Slow QueryEvents (DB time)", map[string]interface{}{"db_time": humanizeDuration(dbQueryTime), "filter": filter})
+					}
+				}
+
+				wrappedCh <- evt
+			case <-timeoutCtx.Done():
+				logger.Error("PROFILING", "QueryEvents timeout while reading events", map[string]interface{}{"error": timeoutCtx.Err(), "filter": filter})
+				break loop
+			case <-ctx.Done():
+				logger.Error("PROFILING", "QueryEvents context canceled while reading events", map[string]interface{}{"error": ctx.Err(), "filter": filter})
+				break loop
+			}
 		}
 
 		// Calculate total time for the complete operation
