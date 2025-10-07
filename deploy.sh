@@ -54,19 +54,19 @@ fi
 
 # Pull latest images
 echo -e "${YELLOW}📥 Pulling latest images...${NC}"
-docker-compose -f "$COMPOSE_FILE" pull
+docker compose -f "$COMPOSE_FILE" pull
 
 # Build application
 echo -e "${YELLOW}🔨 Building application...${NC}"
-docker-compose -f "$COMPOSE_FILE" build --no-cache
+docker compose -f "$COMPOSE_FILE" build --no-cache
 
 # Stop existing containers
 echo -e "${YELLOW}🛑 Stopping existing containers...${NC}"
-docker-compose -f "$COMPOSE_FILE" down
+docker compose -f "$COMPOSE_FILE" down
 
 # Start services
 echo -e "${YELLOW}🚀 Starting services...${NC}"
-docker-compose -f "$COMPOSE_FILE" up -d
+docker compose -f "$COMPOSE_FILE" up -d
 
 # Wait for health check
 echo -e "${YELLOW}⏳ Waiting for health check...${NC}"
@@ -85,14 +85,14 @@ done
 if [ $counter -eq $timeout ]; then
     echo -e "${RED}❌ Health check failed after ${timeout} seconds${NC}"
     echo -e "${YELLOW}📋 Checking logs...${NC}"
-    docker-compose -f "$COMPOSE_FILE" logs --tail=50
+    docker compose -f "$COMPOSE_FILE" logs --tail=50
     exit 1
 fi
 
 # Show status
 echo -e "${GREEN}🎉 Deployment completed successfully!${NC}"
 echo -e "${YELLOW}📊 Service Status:${NC}"
-docker-compose -f "$COMPOSE_FILE" ps
+docker compose -f "$COMPOSE_FILE" ps
 
 echo -e "${YELLOW}📈 Health Check:${NC}"
 curl -s http://localhost:3334/health | jq . 2>/dev/null || curl -s http://localhost:3334/health
@@ -107,7 +107,7 @@ echo -e "${GREEN}❤️  Health URL: http://localhost:3334/health${NC}"
 # Optional: Start with Nginx
 if [ "$2" = "with-nginx" ]; then
     echo -e "${YELLOW}🌐 Starting with Nginx reverse proxy...${NC}"
-    docker-compose -f "$COMPOSE_FILE" --profile with-nginx up -d nginx
+    docker compose -f "$COMPOSE_FILE" --profile with-nginx up -d nginx
     echo -e "${GREEN}🌐 Nginx: http://localhost:80 (redirects to HTTPS)${NC}"
     echo -e "${GREEN}🔒 HTTPS: https://localhost:443${NC}"
 fi

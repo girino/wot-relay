@@ -57,13 +57,13 @@ services:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./ssl:/etc/nginx/ssl:ro
     depends_on:
-      - wot-relay
+      - relay
     labels:
       - "autoheal=true"
     networks:
       - wot-network
     profiles:
-      - with-nginx
+     - with-nginx
 
 
   # Autoheal for health monitoring and restarting unhealthy containers
