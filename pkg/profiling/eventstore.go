@@ -102,7 +102,7 @@ func (p *ProfiledEventStore) SaveEvent(ctx context.Context, evt *nostr.Event) er
 		}
 
 		if duration > 200*time.Millisecond {
-			logger.Warn("PROFILING", "Slow SaveEvent (total)", map[string]interface{}{"duration": duration, "event_id": evt.ID})
+			logger.Warn("PROFILING", "Slow SaveEvent (total)", map[string]interface{}{"duration": humanizeDuration(duration), "event_id": evt.ID})
 		}
 	}()
 
@@ -129,10 +129,30 @@ func (p *ProfiledEventStore) SaveEvent(ctx context.Context, evt *nostr.Event) er
 	p.mutex.Unlock()
 
 	if dbDuration > 100*time.Millisecond {
-		logger.Warn("PROFILING", "Slow SaveEvent (DB only)", map[string]interface{}{"duration": dbDuration, "event_id": evt.ID})
+		logger.Warn("PROFILING", "Slow SaveEvent (DB only)", map[string]interface{}{"duration": humanizeDuration(dbDuration), "event_id": evt.ID})
 	}
 
 	return err
+}
+
+func humanizeDuration(d time.Duration) string {
+	if d < time.Microsecond {
+		return fmt.Sprintf("%dns", d.Nanoseconds())
+	} else if d < time.Millisecond {
+		return fmt.Sprintf("%.0fµs", float64(d)/float64(time.Microsecond))
+	} else if d < time.Second {
+		return fmt.Sprintf("%.1fms", float64(d)/float64(time.Millisecond))
+	} else if d < time.Minute {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	} else if d < time.Hour {
+		min := int(d.Minutes())
+		sec := int(d.Seconds()) % 60
+		return fmt.Sprintf("%dm%ds", min, sec)
+	}
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
+	return fmt.Sprintf("%dh%dm%ds", h, m, s)
 }
 
 // QueryEvents profiles the QueryEvents method with proper timing for async channels
@@ -187,7 +207,7 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 				dbQueryTime = firstEventTime.Sub(queryStart)
 
 				if dbQueryTime > 200*time.Millisecond {
-					logger.Warn("PROFILING", "Slow QueryEvents (DB time)", map[string]interface{}{"db_time": dbQueryTime, "filter": filter})
+					logger.Warn("PROFILING", "Slow QueryEvents (DB time)", map[string]interface{}{"db_time": humanizeDuration(dbQueryTime), "filter": filter})
 				}
 			}
 
@@ -210,10 +230,10 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 		p.mutex.Unlock()
 
 		// Log slow queries based on DB query time (time to first event)
-		if dbQueryTime > 200*time.Millisecond {
+		if totalTime > 1000*time.Millisecond || dbQueryTime > 200*time.Millisecond {
 			logger.Warn("PROFILING", "Slow QueryEvents", map[string]interface{}{
-				"db_time":     dbQueryTime,
-				"total_time":  totalTime,
+				"db_time":     humanizeDuration(dbQueryTime),
+				"total_time":  humanizeDuration(totalTime),
 				"event_count": eventCount,
 				"filter":      filter,
 			})
@@ -242,7 +262,7 @@ func (p *ProfiledEventStore) DeleteEvent(ctx context.Context, evt *nostr.Event) 
 		}
 
 		if duration > 200*time.Millisecond {
-			logger.Warn("PROFILING", "Slow DeleteEvent (total)", map[string]interface{}{"duration": duration, "event_id": evt.ID})
+			logger.Warn("PROFILING", "Slow DeleteEvent (total)", map[string]interface{}{"duration": humanizeDuration(duration), "event_id": evt.ID})
 		}
 	}()
 
@@ -269,7 +289,7 @@ func (p *ProfiledEventStore) DeleteEvent(ctx context.Context, evt *nostr.Event) 
 	p.mutex.Unlock()
 
 	if dbDuration > 100*time.Millisecond {
-		logger.Warn("PROFILING", "Slow DeleteEvent (DB only)", map[string]interface{}{"duration": dbDuration, "event_id": evt.ID})
+		logger.Warn("PROFILING", "Slow DeleteEvent (DB only)", map[string]interface{}{"duration": humanizeDuration(dbDuration), "event_id": evt.ID})
 	}
 
 	return err
@@ -294,7 +314,7 @@ func (p *ProfiledEventStore) ReplaceEvent(ctx context.Context, evt *nostr.Event)
 		}
 
 		if duration > 200*time.Millisecond {
-			logger.Warn("PROFILING", "Slow ReplaceEvent (total)", map[string]interface{}{"duration": duration, "event_id": evt.ID})
+			logger.Warn("PROFILING", "Slow ReplaceEvent (total)", map[string]interface{}{"duration": humanizeDuration(duration), "event_id": evt.ID})
 		}
 	}()
 
@@ -321,7 +341,7 @@ func (p *ProfiledEventStore) ReplaceEvent(ctx context.Context, evt *nostr.Event)
 	p.mutex.Unlock()
 
 	if dbDuration > 100*time.Millisecond {
-		logger.Warn("PROFILING", "Slow ReplaceEvent (DB only)", map[string]interface{}{"duration": dbDuration, "event_id": evt.ID})
+		logger.Warn("PROFILING", "Slow ReplaceEvent (DB only)", map[string]interface{}{"duration": humanizeDuration(dbDuration), "event_id": evt.ID})
 	}
 
 	return err
@@ -337,7 +357,7 @@ func (p *ProfiledEventStore) Init() error {
 		p.stats.InitDuration += duration
 		p.mutex.Unlock()
 
-		logger.Info("PROFILING", "Init completed", map[string]interface{}{"duration": duration})
+		logger.Info("PROFILING", "Init completed", map[string]interface{}{"duration": humanizeDuration(duration)})
 	}()
 
 	return p.Store.Init()
@@ -353,7 +373,7 @@ func (p *ProfiledEventStore) Close() {
 		p.stats.CloseDuration += duration
 		p.mutex.Unlock()
 
-		logger.Info("PROFILING", "Close completed", map[string]interface{}{"duration": duration})
+		logger.Info("PROFILING", "Close completed", map[string]interface{}{"duration": humanizeDuration(duration)})
 	}()
 
 	p.Store.Close()
