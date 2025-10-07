@@ -1286,26 +1286,26 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 						}
 					}
 
-				logger.Info("ARCHIVE", "Page processed", map[string]interface{}{
-					"kind": kind, "page": pageCount, "page_events": pageEvents, "kind_total": kindEvents, "overall_total": totalEvents,
-				})
+					logger.Info("ARCHIVE", "Page processed", map[string]interface{}{
+						"kind": kind, "page": pageCount, "page_events": pageEvents, "kind_total": kindEvents, "overall_total": totalEvents,
+					})
 
 					// Stop only when page is completely empty (0 events)
-				if pageEvents == 0 {
-					logger.Info("ARCHIVE", "Kind completed - empty page", map[string]interface{}{"kind": kind})
-					break
+					if pageEvents == 0 {
+						logger.Info("ARCHIVE", "Kind completed - empty page", map[string]interface{}{"kind": kind})
+						break
 					}
 
 					// Stop if we've gone back too far (configurable limit)
-				if until < maxArchiveTime {
-					logger.Info("ARCHIVE", "Kind reached day limit", map[string]interface{}{"kind": kind, "max_days": archiveMaxDays, "until": until, "max_archive_time": maxArchiveTime})
-					break
+					if until < maxArchiveTime {
+						logger.Info("ARCHIVE", "Kind reached day limit", map[string]interface{}{"kind": kind, "max_days": archiveMaxDays, "until": until, "max_archive_time": maxArchiveTime})
+						break
 					}
 
 					// Stop if no new events were found
-				if !hasNewEvents {
-					logger.Info("ARCHIVE", "Kind completed - no new events", map[string]interface{}{"kind": kind})
-					break
+					if !hasNewEvents {
+						logger.Info("ARCHIVE", "Kind completed - no new events", map[string]interface{}{"kind": kind})
+						break
 					}
 
 					// Small delay between pages to be nice to relays
@@ -1412,10 +1412,10 @@ func deleteOldNotes(relay *khatru.Relay) error {
 			// Delete this batch
 			for num_evt, del_evt := range events {
 				for _, del := range relay.DeleteEvent {
-				if err := del(ctx, del_evt); err != nil {
-					logger.Error("ARCHIVE", "Error deleting note in batch", map[string]interface{}{"note_number": num_evt, "event_id": del_evt.ID, "error": err})
-					return err
-				}
+					if err := del(ctx, del_evt); err != nil {
+						logger.Error("ARCHIVE", "Error deleting note in batch", map[string]interface{}{"note_number": num_evt, "event_id": del_evt.ID, "error": err})
+						return err
+					}
 				}
 			}
 			events = events[:0] // Reset slice but keep capacity
@@ -1426,10 +1426,10 @@ func deleteOldNotes(relay *khatru.Relay) error {
 	if len(events) > 0 {
 		for num_evt, del_evt := range events {
 			for _, del := range relay.DeleteEvent {
-			if err := del(ctx, del_evt); err != nil {
-				logger.Error("ARCHIVE", "Error deleting note in final batch", map[string]interface{}{"note_number": num_evt, "event_id": del_evt.ID, "error": err})
-				return err
-			}
+				if err := del(ctx, del_evt); err != nil {
+					logger.Error("ARCHIVE", "Error deleting note in final batch", map[string]interface{}{"note_number": num_evt, "event_id": del_evt.ID, "error": err})
+					return err
+				}
 			}
 		}
 	}
