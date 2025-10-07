@@ -356,7 +356,28 @@ func main() {
 	relay.RejectFilter = append(relay.RejectFilter,
 		policies.NoEmptyFilters,
 		policies.NoComplexFilters,
-		policies.AntiSyncBots,
+		// Only allows for authed bots
+		func(ctx context.Context, filter nostr.Filter) (reject bool, msg string) {
+			r, _ := policies.AntiSyncBots(ctx, filter)
+			if r {
+				r, _ = policies.MustAuth(ctx, filter)
+				if r {
+					return r, "auth-required: kind 1 scraping requires authentication"
+				}
+
+				trustNetworkMutex.RLock()
+				pubkey := khatru.GetAuthed(ctx)
+				trusted := trustNetworkMap[pubkey]
+				trustNetworkMutex.RUnlock()
+
+				if !trusted {
+					return true, pubkey + " not in web of trust"
+				}
+
+				return false, ""
+			}
+			return false, ""
+		},
 		policies.NoSearchQueries,
 		policies.FilterIPRateLimiter(20, time.Minute, 100),
 	)

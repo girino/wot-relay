@@ -171,12 +171,15 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 	go func() {
 		defer close(wrappedCh)
 
+		// total time starts before semaphore is acquired.
+		totalTimeStart := time.Now()
+
 		// Acquire semaphore to control concurrency (default: 6 simultaneous calls)
 		select {
 		case p.ReadSemaphore <- struct{}{}:
 			// Got semaphore, proceed with query
 		case <-ctx.Done():
-			logger.Error("PROFILING", "QueryEvents context canceled before semaphore", map[string]interface{}{"error": ctx.Err()})
+			logger.Error("PROFILING", "QueryEvents context canceled before semaphore", map[string]interface{}{"error": ctx.Err(), "filter": filter})
 			return
 		}
 
@@ -185,6 +188,12 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 			<-p.ReadSemaphore
 		}()
 
+		// initialize timers before first call to qeury events.
+		queryStart := time.Now()
+		eventCount := 0
+		dbQueryTime := time.Duration(0)
+		firstEvent := true
+
 		// Get the backend channel
 		ch, err := p.Store.QueryEvents(ctx, filter)
 		if err != nil {
@@ -192,19 +201,14 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 			return
 		}
 
-		queryStart := time.Now()
-		eventCount := 0
-		firstEventTime := time.Time{}
-		dbQueryTime := time.Duration(0)
-
 		// Read all events from the backend channel
 		for evt := range ch {
 			eventCount++
 
 			// Measure time to first event (true DB query time)
-			if firstEventTime.IsZero() {
-				firstEventTime = time.Now()
-				dbQueryTime = firstEventTime.Sub(queryStart)
+			if firstEvent {
+				firstEvent = false
+				dbQueryTime = time.Since(queryStart)
 
 				if dbQueryTime > 200*time.Millisecond {
 					logger.Warn("PROFILING", "Slow QueryEvents (DB time)", map[string]interface{}{"db_time": humanizeDuration(dbQueryTime), "filter": filter})
@@ -215,11 +219,11 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 		}
 
 		// Calculate total time for the complete operation
-		totalTime := time.Since(queryStart)
+		totalTime := time.Since(totalTimeStart)
 
 		// If no events were returned, dbQueryTime is the same as totalTime
 		if eventCount == 0 {
-			dbQueryTime = totalTime
+			dbQueryTime = time.Since(queryStart)
 		}
 
 		// Update stats with both metrics
