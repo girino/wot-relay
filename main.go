@@ -349,13 +349,17 @@ func main() {
 	relay.RejectEvent = append(relay.RejectEvent,
 		policies.RejectEventsWithBase64Media,
 		policies.EventIPRateLimiter(50, time.Minute*1, 300),
+		policies.EventPubKeyRateLimiter(10, time.Minute*1, 60),
 	)
 
 	// Temporarily disabled to test if filters are blocking queries
-	//relay.RejectFilter = append(relay.RejectFilter,
-	//	policies.NoEmptyFilters,
-	//	policies.NoComplexFilters,
-	//)
+	relay.RejectFilter = append(relay.RejectFilter,
+		policies.NoEmptyFilters,
+		policies.NoComplexFilters,
+		policies.AntiSyncBots,
+		policies.NoSearchQueries,
+		policies.FilterIPRateLimiter(20, time.Minute, 100),
+	)
 
 	relay.RejectConnection = append(relay.RejectConnection,
 		policies.ConnectionRateLimiter(10, time.Minute*2, 30),
