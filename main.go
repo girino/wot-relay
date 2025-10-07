@@ -335,7 +335,7 @@ func main() {
 	relay.Info.Version = version
 
 	// Create optimized SQLite backend (implements eventstore.Store interface)
-	log.Printf("📂 Creating SQLite backend with DBPath: %s", config.DBPath)
+	logger.Info("MAIN", "Creating SQLite backend", map[string]interface{}{"db_path": config.DBPath})
 	sqliteBackend := sqlite.NewOptimizedSQLiteBackend(config.DBPath)
 
 	// Create profiled event store wrapper (adds profiling to the backend)
@@ -864,7 +864,7 @@ func getEnv(key string) string {
 func updateTrustNetworkFilter(pubkeyFollowerCount map[string]int) {
 	myTrustNetworkMap := make(map[string]bool)
 
-	log.Println("🌐 building new trust network map")
+	logger.Info("WOT", "Building new trust network map")
 
 	for pubkey, count := range pubkeyFollowerCount {
 		if count >= config.MinimumFollowers {
@@ -877,7 +877,7 @@ func updateTrustNetworkFilter(pubkeyFollowerCount map[string]int) {
 	trustNetworkMap = myTrustNetworkMap
 	trustNetworkMutex.Unlock()
 
-	log.Println("🌐 trust network map updated with", len(myTrustNetworkMap), "keys")
+	logger.Info("WOT", "Trust network map updated", map[string]interface{}{"key_count": len(myTrustNetworkMap)})
 }
 
 func refreshProfiles(ctx context.Context) {
@@ -1017,7 +1017,7 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 					if isValidPubkey(pubkey) {
 						oneHopNetwork = append(oneHopNetwork, pubkey)
 					} else {
-						log.Println("invalid pubkey in one hop network: ", pubkey)
+						logger.Warn("WOT", "Invalid pubkey in one hop network", map[string]interface{}{"pubkey": pubkey})
 					}
 				}
 			}
@@ -1218,7 +1218,7 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 				}}
 			}
 
-			log.Println("📦 archiving trusted notes...")
+			logger.Info("ARCHIVE", "Archiving trusted notes")
 
 			// Paginate through historical events (configurable max days)
 			archiveMaxDays := config.ArchiveMaxDays
@@ -1232,7 +1232,7 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 			seenEvents := make(map[string]bool, 1000) // Global deduplication cache
 
 			for _, kind := range filters[0].Kinds {
-				log.Printf("📦 processing kind %d events", kind)
+				logger.Info("ARCHIVE", "Processing events", map[string]interface{}{"kind": kind})
 
 				// Use nak-style pagination for this specific kind
 				until := nostr.Now()
@@ -1242,7 +1242,7 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 
 				for {
 					pageCount++
-					log.Printf("📦 kind %d, page %d (until: %d, limit: %d)", kind, pageCount, until, limit)
+					logger.Info("ARCHIVE", "Processing page", map[string]interface{}{"kind": kind, "page": pageCount, "until": until, "limit": limit})
 
 					// Create filter for this specific kind
 					kindFilter := nostr.Filter{
@@ -1261,10 +1261,10 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 						// Use worker pool instead of creating unlimited goroutines
 						select {
 						case <-timeout.Done():
-							log.Printf("📦 timeout reached, stopping pagination for kind %d", kind)
+							logger.Warn("ARCHIVE", "Timeout reached, stopping pagination", map[string]interface{}{"kind": kind})
 							goto nextKind
 						case <-ctx.Done():
-							log.Printf("📦 context cancelled, stopping pagination for kind %d", kind)
+							logger.Warn("ARCHIVE", "Context cancelled, stopping pagination", map[string]interface{}{"kind": kind})
 							goto nextKind
 						default:
 							// Deduplicate events globally
@@ -1286,32 +1286,33 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 						}
 					}
 
-					log.Printf("📦 kind %d, page %d: processed %d events (kind total: %d, overall total: %d)",
-						kind, pageCount, pageEvents, kindEvents, totalEvents)
+				logger.Info("ARCHIVE", "Page processed", map[string]interface{}{
+					"kind": kind, "page": pageCount, "page_events": pageEvents, "kind_total": kindEvents, "overall_total": totalEvents,
+				})
 
 					// Stop only when page is completely empty (0 events)
-					if pageEvents == 0 {
-						log.Printf("📦 kind %d completed: got 0 events (page empty)", kind)
-						break
+				if pageEvents == 0 {
+					logger.Info("ARCHIVE", "Kind completed - empty page", map[string]interface{}{"kind": kind})
+					break
 					}
 
 					// Stop if we've gone back too far (configurable limit)
-					if until < maxArchiveTime {
-						log.Printf("📦 kind %d reached %d-day limit (until: %d < %d)", kind, archiveMaxDays, until, maxArchiveTime)
-						break
+				if until < maxArchiveTime {
+					logger.Info("ARCHIVE", "Kind reached day limit", map[string]interface{}{"kind": kind, "max_days": archiveMaxDays, "until": until, "max_archive_time": maxArchiveTime})
+					break
 					}
 
 					// Stop if no new events were found
-					if !hasNewEvents {
-						log.Printf("📦 kind %d completed: no new events found", kind)
-						break
+				if !hasNewEvents {
+					logger.Info("ARCHIVE", "Kind completed - no new events", map[string]interface{}{"kind": kind})
+					break
 					}
 
 					// Small delay between pages to be nice to relays
 					time.Sleep(200 * time.Millisecond)
 				}
 
-				log.Printf("📦 kind %d completed: processed %d events", kind, kindEvents)
+				logger.Info("ARCHIVE", "Kind completed", map[string]interface{}{"kind": kind, "events_processed": kindEvents})
 
 				// Small delay between kinds to be nice to relays
 				time.Sleep(500 * time.Millisecond)
@@ -1329,16 +1330,16 @@ func archiveTrustedNotes(ctx context.Context, relay *khatru.Relay) {
 			})
 			metrics.UpdateLastArchiving()
 		} else {
-			log.Println("🔄 web of trust will refresh in", config.RefreshInterval, "hours")
+			logger.Info("WOT", "Web of trust will refresh", map[string]interface{}{"refresh_interval_hours": config.RefreshInterval})
 			<-timeout.Done()
 		}
 	}()
 
 	select {
 	case <-timeout.Done():
-		log.Println("restarting process")
+		logger.Info("MAIN", "Restarting process")
 	case <-done:
-		log.Println("📦 archiving process completed")
+		logger.Info("ARCHIVE", "Archiving process completed")
 	}
 }
 
@@ -1363,14 +1364,14 @@ func deleteOldNotes(relay *khatru.Relay) error {
 	ctx := context.TODO()
 
 	if config.MaxAgeDays <= 0 {
-		log.Printf("MAX_AGE_DAYS disabled")
+		logger.Info("ARCHIVE", "MAX_AGE_DAYS disabled")
 		return nil
 	}
 
 	maxAgeSecs := nostr.Timestamp(config.MaxAgeDays * 86400)
 	oldAge := nostr.Now() - maxAgeSecs
 	if oldAge <= 0 {
-		log.Printf("MAX_AGE_DAYS too large")
+		logger.Warn("ARCHIVE", "MAX_AGE_DAYS too large")
 		return nil
 	}
 
@@ -1394,7 +1395,7 @@ func deleteOldNotes(relay *khatru.Relay) error {
 
 	ch, err := relay.QueryEvents[0](ctx, filter)
 	if err != nil {
-		log.Printf("query error %s", err)
+		logger.Error("ARCHIVE", "Query error", map[string]interface{}{"error": err})
 		return err
 	}
 
@@ -1411,10 +1412,10 @@ func deleteOldNotes(relay *khatru.Relay) error {
 			// Delete this batch
 			for num_evt, del_evt := range events {
 				for _, del := range relay.DeleteEvent {
-					if err := del(ctx, del_evt); err != nil {
-						log.Printf("error deleting note %d of batch. event id: %s", num_evt, del_evt.ID)
-						return err
-					}
+				if err := del(ctx, del_evt); err != nil {
+					logger.Error("ARCHIVE", "Error deleting note in batch", map[string]interface{}{"note_number": num_evt, "event_id": del_evt.ID, "error": err})
+					return err
+				}
 				}
 			}
 			events = events[:0] // Reset slice but keep capacity
@@ -1425,18 +1426,18 @@ func deleteOldNotes(relay *khatru.Relay) error {
 	if len(events) > 0 {
 		for num_evt, del_evt := range events {
 			for _, del := range relay.DeleteEvent {
-				if err := del(ctx, del_evt); err != nil {
-					log.Printf("error deleting note %d of final batch. event id: %s", num_evt, del_evt.ID)
-					return err
-				}
+			if err := del(ctx, del_evt); err != nil {
+				logger.Error("ARCHIVE", "Error deleting note in final batch", map[string]interface{}{"note_number": num_evt, "event_id": del_evt.ID, "error": err})
+				return err
+			}
 			}
 		}
 	}
 
 	if count == 0 {
-		log.Println("0 old notes found")
+		logger.Info("ARCHIVE", "No old notes found")
 	} else {
-		log.Printf("%d old (until %d) notes deleted", count, oldAge)
+		logger.Info("ARCHIVE", "Old notes deleted", map[string]interface{}{"count": count, "old_age": oldAge})
 	}
 
 	return nil
