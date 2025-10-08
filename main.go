@@ -23,6 +23,7 @@ import (
 	"github.com/fiatjaf/khatru/policies"
 	"github.com/girino/wot-relay/pkg/logger"
 	"github.com/girino/wot-relay/pkg/newsqlite3"
+	"github.com/girino/wot-relay/pkg/profiling"
 	"github.com/joho/godotenv"
 	"github.com/nbd-wtf/go-nostr"
 )
@@ -37,6 +38,14 @@ func max(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+// avgDuration calculates average duration in milliseconds
+func avgDuration(totalDuration time.Duration, calls int64) float64 {
+	if calls == 0 {
+		return 0
+	}
+	return float64(totalDuration.Milliseconds()) / float64(calls)
 }
 
 // Metrics tracks application metrics
@@ -153,6 +162,7 @@ type Config struct {
 
 // Remove persistent pool - we'll create connections on-demand
 var wdb nostr.RelayStore
+var profiledDB *profiling.ProfiledEventStore
 var config Config
 
 // createTemporaryPool creates a temporary pool for a specific operation
@@ -341,7 +351,11 @@ func main() {
 		panic(err)
 	}
 
-	wdb = eventstore.RelayWrapper{Store: db}
+	// Wrap with profiling for stats collection
+	logger.Info("MAIN", "Wrapping database with profiling layer")
+	profiledDB = profiling.NewProfiledEventStore(db)
+
+	wdb = eventstore.RelayWrapper{Store: profiledDB}
 
 	relay.RejectEvent = append(relay.RejectEvent,
 		policies.RejectEventsWithBase64Media,
@@ -354,27 +368,27 @@ func main() {
 		policies.NoEmptyFilters,
 		policies.NoComplexFilters,
 		// Only allows for authed bots
-		func(ctx context.Context, filter nostr.Filter) (reject bool, msg string) {
-			r, _ := policies.AntiSyncBots(ctx, filter)
-			if r {
-				r, _ = policies.MustAuth(ctx, filter)
-				if r {
-					return r, "auth-required: kind 1 scraping requires authentication"
-				}
+		// func(ctx context.Context, filter nostr.Filter) (reject bool, msg string) {
+		// 	r, _ := policies.AntiSyncBots(ctx, filter)
+		// 	if r {
+		// 		r, _ = policies.MustAuth(ctx, filter)
+		// 		if r {
+		// 			return r, "auth-required: kind 1 scraping requires authentication"
+		// 		}
 
-				trustNetworkMutex.RLock()
-				pubkey := khatru.GetAuthed(ctx)
-				trusted := trustNetworkMap[pubkey]
-				trustNetworkMutex.RUnlock()
+		// 		trustNetworkMutex.RLock()
+		// 		pubkey := khatru.GetAuthed(ctx)
+		// 		trusted := trustNetworkMap[pubkey]
+		// 		trustNetworkMutex.RUnlock()
 
-				if !trusted {
-					return true, pubkey + " not in web of trust"
-				}
+		// 		if !trusted {
+		// 			return true, pubkey + " not in web of trust"
+		// 		}
 
-				return false, ""
-			}
-			return false, ""
-		},
+		// 		return false, ""
+		// 	}
+		// 	return false, ""
+		// },
 		policies.NoSearchQueries,
 		policies.FilterIPRateLimiter(20, time.Minute, 100),
 	)
@@ -539,51 +553,55 @@ func main() {
 
 		// Get database stats if available
 		var dbStats map[string]interface{}
-		logger.Info("STATS", "Starting database stats collection", map[string]interface{}{
-			"wdb_nil": wdb == nil,
-		})
-		if wdb != nil {
-			logger.Info("STATS", "wdb is not nil, attempting type assertion", map[string]interface{}{
-				"wdb_type": fmt.Sprintf("%T", wdb),
-			})
-			if db, ok := wdb.(eventstore.RelayWrapper); ok {
-				logger.Info("STATS", "Successfully cast to RelayWrapper", map[string]interface{}{
-					"store_nil": db.Store == nil,
-				})
-				// Debug: log the actual type of db.Store
-				logger.Info("STATS", "Database store type", map[string]interface{}{
-					"store_type": fmt.Sprintf("%T", db.Store),
-				})
-				// Get SQLite connection stats
-				if sqliteDB, ok := db.Store.(*newsqlite3.SQLite3Backend); ok {
-					stats := sqliteDB.Stats()
-					dbStats = map[string]interface{}{
-						"open_connections": stats.OpenConnections,
-						"in_use":           stats.InUse,
-						"idle":             stats.Idle,
-						"wait_count":       stats.WaitCount,
-					}
-					logger.Info("STATS", "Database stats collected", map[string]interface{}{
-						"open_connections": stats.OpenConnections,
-					})
-				} else {
-					logger.Info("STATS", "Type assertion failed - not newsqlite3.SQLite3Backend", map[string]interface{}{
-						"actual_type": fmt.Sprintf("%T", db.Store),
-					})
-				}
-			} else {
-				logger.Info("STATS", "Failed to cast wdb to RelayWrapper", map[string]interface{}{
-					"wdb_type": fmt.Sprintf("%T", wdb),
-				})
-			}
-		} else {
-			logger.Info("STATS", "wdb is nil - no database stats available")
-		}
+		if profiledDB != nil {
+			// Get underlying newsqlite3 backend for connection stats
+			if backend := profiledDB.GetBackend(); backend != nil {
+				if sqliteDB, ok := backend.(*newsqlite3.SQLite3Backend); ok {
+					connStats := sqliteDB.Stats()
 
-		// Get worker stats if available
-		var workerStats map[string]interface{}
-		if eventProcessor != nil {
-			workerStats = eventProcessor.GetWorkerStats()
+					// Get profiling stats
+					profStats := profiledDB.GetStats()
+
+					dbStats = map[string]interface{}{
+						"connections": map[string]interface{}{
+							"open_connections": connStats.OpenConnections,
+							"in_use":           connStats.InUse,
+							"idle":             connStats.Idle,
+							"wait_count":       connStats.WaitCount,
+						},
+						"operations": map[string]interface{}{
+							"save_event": map[string]interface{}{
+								"calls":      profStats.SaveEventCalls,
+								"total_ms":   profStats.SaveEventDuration.Milliseconds(),
+								"db_only_ms": profStats.SaveEventDBDuration.Milliseconds(),
+								"avg_ms":     avgDuration(profStats.SaveEventDuration, profStats.SaveEventCalls),
+								"avg_db_ms":  avgDuration(profStats.SaveEventDBDuration, profStats.SaveEventCalls),
+							},
+							"query_events": map[string]interface{}{
+								"calls":      profStats.QueryEventsCalls,
+								"total_ms":   profStats.QueryEventsDuration.Milliseconds(),
+								"db_only_ms": profStats.QueryEventsDBDuration.Milliseconds(),
+								"avg_ms":     avgDuration(profStats.QueryEventsDuration, profStats.QueryEventsCalls),
+								"avg_db_ms":  avgDuration(profStats.QueryEventsDBDuration, profStats.QueryEventsCalls),
+							},
+							"delete_event": map[string]interface{}{
+								"calls":      profStats.DeleteEventCalls,
+								"total_ms":   profStats.DeleteEventDuration.Milliseconds(),
+								"db_only_ms": profStats.DeleteEventDBDuration.Milliseconds(),
+								"avg_ms":     avgDuration(profStats.DeleteEventDuration, profStats.DeleteEventCalls),
+								"avg_db_ms":  avgDuration(profStats.DeleteEventDBDuration, profStats.DeleteEventCalls),
+							},
+							"replace_event": map[string]interface{}{
+								"calls":      profStats.ReplaceEventCalls,
+								"total_ms":   profStats.ReplaceEventDuration.Milliseconds(),
+								"db_only_ms": profStats.ReplaceEventDBDuration.Milliseconds(),
+								"avg_ms":     avgDuration(profStats.ReplaceEventDuration, profStats.ReplaceEventCalls),
+								"avg_db_ms":  avgDuration(profStats.ReplaceEventDBDuration, profStats.ReplaceEventCalls),
+							},
+						},
+					}
+				}
+			}
 		}
 
 		stats := map[string]interface{}{
@@ -620,10 +638,6 @@ func main() {
 				"last_error":     currentMetrics.LastError,
 				"last_error_msg": currentMetrics.LastErrorMsg,
 			},
-		}
-
-		if workerStats != nil {
-			stats["workers"] = workerStats
 		}
 
 		if dbStats != nil {
@@ -710,15 +724,21 @@ func monitorResources() {
 			})
 
 			// Database performance monitoring
-			if wdb != nil {
-				if db, ok := wdb.(eventstore.RelayWrapper); ok {
-					if sqliteDB, ok := db.Store.(*newsqlite3.SQLite3Backend); ok {
-						stats := sqliteDB.Stats()
-						logger.Info("MONITOR", "Database connections", map[string]interface{}{
-							"open_connections": stats.OpenConnections,
-							"in_use":           stats.InUse,
-							"idle":             stats.Idle,
-							"wait_count":       stats.WaitCount,
+			if profiledDB != nil {
+				if backend := profiledDB.GetBackend(); backend != nil {
+					if sqliteDB, ok := backend.(*newsqlite3.SQLite3Backend); ok {
+						connStats := sqliteDB.Stats()
+						profStats := profiledDB.GetStats()
+
+						logger.Info("MONITOR", "Database performance", map[string]interface{}{
+							"open_connections": connStats.OpenConnections,
+							"in_use":           connStats.InUse,
+							"idle":             connStats.Idle,
+							"wait_count":       connStats.WaitCount,
+							"save_calls":       profStats.SaveEventCalls,
+							"query_calls":      profStats.QueryEventsCalls,
+							"avg_save_ms":      avgDuration(profStats.SaveEventDBDuration, profStats.SaveEventCalls),
+							"avg_query_ms":     avgDuration(profStats.QueryEventsDBDuration, profStats.QueryEventsCalls),
 						})
 					}
 				}

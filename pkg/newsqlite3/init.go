@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/fiatjaf/eventstore"
 	"github.com/jmoiron/sqlx"
@@ -17,10 +18,42 @@ const (
 	queryAuthorsLimit       = 500
 	queryKindsLimit         = 10
 	queryTagsLimit          = 10
-	currentMigrationVersion = 3
+	currentMigrationVersion = 6
 )
 
 var _ eventstore.Store = (*SQLite3Backend)(nil)
+
+// setPerConnectionPragmas sets performance pragmas that must be set per connection
+func (b *SQLite3Backend) setPerConnectionPragmas() error {
+	pragmas := []struct {
+		name  string
+		value string
+	}{
+		// Increase cache size for better performance (64MB - conservative default)
+		{"cache_size", "-64000"},
+
+		// Enable memory-mapped I/O for better read performance (256MB - conservative)
+		{"mmap_size", "268435456"},
+
+		// Increase busy timeout to handle concurrent access (5 seconds)
+		{"busy_timeout", "5000"},
+
+		// Use memory for temporary tables and indices
+		{"temp_store", "MEMORY"},
+
+		// Enable foreign key constraints
+		{"foreign_keys", "ON"},
+	}
+
+	for _, pragma := range pragmas {
+		query := fmt.Sprintf("PRAGMA %s = %s", pragma.name, pragma.value)
+		if _, err := b.DB.Exec(query); err != nil {
+			return fmt.Errorf("failed to set PRAGMA %s: %w", pragma.name, err)
+		}
+	}
+
+	return nil
+}
 
 func (b *SQLite3Backend) Init() error {
 	db, err := sqlx.Connect("sqlite3", b.DatabaseURL)
@@ -30,6 +63,11 @@ func (b *SQLite3Backend) Init() error {
 
 	db.Mapper = reflectx.NewMapperFunc("json", sqlx.NameMapper)
 	b.DB = db
+
+	// Set per-connection performance PRAGMAs
+	if err := b.setPerConnectionPragmas(); err != nil {
+		return fmt.Errorf("failed to set performance pragmas: %w", err)
+	}
 
 	// Run migrations
 	if err := b.runMigrations(); err != nil {
@@ -51,6 +89,12 @@ func (b *SQLite3Backend) Init() error {
 	}
 	if b.QueryTagsLimit == 0 {
 		b.QueryTagsLimit = queryTagsLimit
+	}
+
+	// Set default slow query threshold (100ms) if not configured
+	// Set to 0 to disable slow query logging
+	if b.SlowQueryThreshold == 0 {
+		b.SlowQueryThreshold = 100 * time.Millisecond
 	}
 
 	// Start periodic maintenance if interval is set
@@ -194,6 +238,36 @@ func (b *SQLite3Backend) runMigrations() error {
 		currentVersion = 3
 	}
 
+	if currentVersion < 4 {
+		if err := b.migration4(); err != nil {
+			return fmt.Errorf("migration 4 failed: %w", err)
+		}
+		if err := b.setVersion(4); err != nil {
+			return err
+		}
+		currentVersion = 4
+	}
+
+	if currentVersion < 5 {
+		if err := b.migration5(); err != nil {
+			return fmt.Errorf("migration 5 failed: %w", err)
+		}
+		if err := b.setVersion(5); err != nil {
+			return err
+		}
+		currentVersion = 5
+	}
+
+	if currentVersion < 6 {
+		if err := b.migration6(); err != nil {
+			return fmt.Errorf("migration 6 failed: %w", err)
+		}
+		if err := b.setVersion(6); err != nil {
+			return err
+		}
+		currentVersion = 6
+	}
+
 	return nil
 }
 
@@ -232,9 +306,46 @@ func (b *SQLite3Backend) migration0() error {
 	return nil
 }
 
-// migration1 removes old indexes from previous sqlite implementation
+// migration1 sets persistent database optimization pragmas
+// Applied early to benefit heavy migrations (especially tag migration)
 func (b *SQLite3Backend) migration1() error {
 	fmt.Println("Running migration 1...")
+
+	// Enable WAL mode for better concurrency (persistent)
+	// WAL allows concurrent reads while writing and speeds up bulk inserts
+	fmt.Println("  Enabling WAL mode for better concurrency...")
+	if _, err := b.DB.Exec("PRAGMA journal_mode = WAL"); err != nil {
+		return fmt.Errorf("failed to set WAL mode: %w", err)
+	}
+
+	// Set synchronous mode to NORMAL for better performance (persistent)
+	// NORMAL is safe for WAL mode and much faster than FULL
+	fmt.Println("  Setting synchronous mode to NORMAL...")
+	if _, err := b.DB.Exec("PRAGMA synchronous = NORMAL"); err != nil {
+		return fmt.Errorf("failed to set synchronous mode: %w", err)
+	}
+
+	// Enable incremental auto_vacuum to reclaim space gradually (persistent)
+	// This prevents the database from growing indefinitely
+	fmt.Println("  Enabling incremental auto_vacuum...")
+	if _, err := b.DB.Exec("PRAGMA auto_vacuum = INCREMENTAL"); err != nil {
+		return fmt.Errorf("failed to set auto_vacuum: %w", err)
+	}
+
+	// Set application_id for better database identification (persistent)
+	// Using a unique ID for nostr relay databases
+	fmt.Println("  Setting application_id...")
+	if _, err := b.DB.Exec("PRAGMA application_id = 1852794739"); err != nil { // 'nostr' in hex
+		return fmt.Errorf("failed to set application_id: %w", err)
+	}
+
+	fmt.Println("Migration 1 complete")
+	return nil
+}
+
+// migration2 removes old indexes from previous sqlite implementation
+func (b *SQLite3Backend) migration2() error {
+	fmt.Println("Running migration 2...")
 
 	// List of old indexes to remove from previous implementation
 	oldIndexes := []string{
@@ -257,13 +368,13 @@ func (b *SQLite3Backend) migration1() error {
 		}
 	}
 
-	fmt.Println("Migration 1 complete")
+	fmt.Println("Migration 2 complete")
 	return nil
 }
 
-// migration2 enables foreign keys and creates the tag table
-func (b *SQLite3Backend) migration2() error {
-	fmt.Println("Running migration 2...")
+// migration3 enables foreign keys and creates the tag table
+func (b *SQLite3Backend) migration3() error {
+	fmt.Println("Running migration 3...")
 
 	// Disable foreign key constraints during migration for better performance
 	fmt.Println("  Temporarily disabling foreign key constraints for faster migration...")
@@ -317,7 +428,7 @@ func (b *SQLite3Backend) migration2() error {
 		return fmt.Errorf("failed to enable foreign keys: %w", err)
 	}
 
-	fmt.Println("Migration 2 complete")
+	fmt.Println("Migration 3 complete")
 	return nil
 }
 
@@ -453,9 +564,9 @@ func (b *SQLite3Backend) insertTagBatch(tags []tagInsert) error {
 	return nil
 }
 
-// migration3 runs VACUUM and ANALYZE to optimize the database
-func (b *SQLite3Backend) migration3() error {
-	fmt.Println("Running migration 3...")
+// migration4 runs VACUUM and ANALYZE to optimize the database
+func (b *SQLite3Backend) migration4() error {
+	fmt.Println("Running migration 4...")
 
 	// Execute ANALYZE before VACUUM to make VACUUM faster
 	fmt.Println("  Running ANALYZE (pre-vacuum) to update statistics...")
@@ -475,6 +586,65 @@ func (b *SQLite3Backend) migration3() error {
 		return fmt.Errorf("failed to execute ANALYZE (post-vacuum): %w", err)
 	}
 
-	fmt.Println("Migration 3 complete")
+	fmt.Println("Migration 4 complete")
+	return nil
+}
+
+// migration5 adds an index on tag.first_data for value-only queries
+func (b *SQLite3Backend) migration5() error {
+	fmt.Println("Running migration 5...")
+
+	// Create index on first_data for queries that filter by tag value only
+	// This complements the composite index (identifier, first_data)
+	fmt.Println("  Creating index tag_first_data_idx on tag(first_data)...")
+	if _, err := b.DB.Exec(`CREATE INDEX IF NOT EXISTS tag_first_data_idx ON tag(first_data)`); err != nil {
+		return fmt.Errorf("failed to create tag_first_data_idx: %w", err)
+	}
+
+	fmt.Println("Migration 5 complete")
+	return nil
+}
+
+// migration6 adds covering and partial indexes for optimized JOIN queries
+func (b *SQLite3Backend) migration6() error {
+	fmt.Println("Running migration 6...")
+
+	// Covering index for tag JOIN queries - includes event_id for covering
+	// This allows the JOIN to be resolved entirely from the index without table lookups
+	fmt.Println("  Creating covering index tag_identifier_first_data_event_idx...")
+	if _, err := b.DB.Exec(`CREATE INDEX IF NOT EXISTS tag_identifier_first_data_event_idx 
+		ON tag(identifier, first_data, event_id)`); err != nil {
+		return fmt.Errorf("failed to create tag_identifier_first_data_event_idx: %w", err)
+	}
+
+	// Partial covering index for common 'p' tag queries (mentions/references)
+	fmt.Println("  Creating partial covering index for 'p' tags...")
+	if _, err := b.DB.Exec(`CREATE INDEX IF NOT EXISTS tag_p_first_data_event_idx 
+		ON tag(first_data, event_id) WHERE identifier = 'p'`); err != nil {
+		return fmt.Errorf("failed to create tag_p_first_data_event_idx: %w", err)
+	}
+
+	// Partial covering index for common 'e' tag queries (replies/references)
+	fmt.Println("  Creating partial covering index for 'e' tags...")
+	if _, err := b.DB.Exec(`CREATE INDEX IF NOT EXISTS tag_e_first_data_event_idx 
+		ON tag(first_data, event_id) WHERE identifier = 'e'`); err != nil {
+		return fmt.Errorf("failed to create tag_e_first_data_event_idx: %w", err)
+	}
+
+	// Composite index on event for JOIN queries: kind + created_at + id (covering for ORDER BY)
+	fmt.Println("  Creating composite index event_kind_time_id_idx...")
+	if _, err := b.DB.Exec(`CREATE INDEX IF NOT EXISTS event_kind_time_id_idx 
+		ON event(kind, created_at DESC, id)`); err != nil {
+		return fmt.Errorf("failed to create event_kind_time_id_idx: %w", err)
+	}
+
+	// Partial index for kind=1 queries (most common - text notes)
+	fmt.Println("  Creating partial index for kind 1 events...")
+	if _, err := b.DB.Exec(`CREATE INDEX IF NOT EXISTS event_kind1_time_id_idx 
+		ON event(created_at DESC, id) WHERE kind = 1`); err != nil {
+		return fmt.Errorf("failed to create event_kind1_time_id_idx: %w", err)
+	}
+
+	fmt.Println("Migration 6 complete")
 	return nil
 }

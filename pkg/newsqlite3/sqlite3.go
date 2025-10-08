@@ -18,6 +18,7 @@ type SQLite3Backend struct {
 	QueryKindsLimit     int
 	QueryTagsLimit      int
 	MaintenanceInterval time.Duration
+	SlowQueryThreshold  time.Duration // Log queries slower than this threshold
 	maintenanceCtx      context.Context
 	maintenanceCancel   context.CancelFunc
 	maintenanceStopped  chan struct{}
