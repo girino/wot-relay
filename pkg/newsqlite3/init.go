@@ -94,7 +94,7 @@ func (b *SQLite3Backend) Init() error {
 	// Set default slow query threshold (100ms) if not configured
 	// Set to 0 to disable slow query logging
 	if b.SlowQueryThreshold == 0 {
-		b.SlowQueryThreshold = 100 * time.Millisecond
+		b.SlowQueryThreshold = 500 * time.Millisecond
 	}
 
 	// Start periodic maintenance if interval is set

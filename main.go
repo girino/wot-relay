@@ -344,16 +344,17 @@ func main() {
 
 	// Create newsqlite3 backend (implements eventstore.Store interface)
 	logger.Info("MAIN", "Creating newsqlite3 backend", map[string]interface{}{"db_path": config.DBPath})
-	db := &newsqlite3.SQLite3Backend{
-		DatabaseURL: config.DBPath,
+	unprofiledDb := &newsqlite3.SQLite3Backend{
+		DatabaseURL:        config.DBPath,
+		SlowQueryThreshold: -1, // Disable slow query logging
 	}
-	if err := db.Init(); err != nil {
+	if err := unprofiledDb.Init(); err != nil {
 		panic(err)
 	}
 
 	// Wrap with profiling for stats collection
 	logger.Info("MAIN", "Wrapping database with profiling layer")
-	profiledDB = profiling.NewProfiledEventStore(db)
+	profiledDB = profiling.NewProfiledEventStore(unprofiledDb)
 
 	wdb = eventstore.RelayWrapper{Store: profiledDB}
 
@@ -397,9 +398,10 @@ func main() {
 		policies.ConnectionRateLimiter(10, time.Minute*2, 30),
 	)
 
-	relay.StoreEvent = append(relay.StoreEvent, db.SaveEvent)
-	relay.QueryEvents = append(relay.QueryEvents, db.QueryEvents)
-	relay.DeleteEvent = append(relay.DeleteEvent, db.DeleteEvent)
+	relay.StoreEvent = append(relay.StoreEvent, profiledDB.SaveEvent)
+	relay.QueryEvents = append(relay.QueryEvents, profiledDB.QueryEvents)
+	relay.DeleteEvent = append(relay.DeleteEvent, profiledDB.DeleteEvent)
+	relay.ReplaceEvent = append(relay.ReplaceEvent, profiledDB.ReplaceEvent)
 	relay.RejectEvent = append(relay.RejectEvent, func(ctx context.Context, event *nostr.Event) (bool, string) {
 		// Don't reject events if we haven't booted yet or if trust network is empty
 		trustNetworkMutex.RLock()
