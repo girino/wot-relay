@@ -8,6 +8,8 @@ import (
 	"github.com/nbd-wtf/go-nostr"
 )
 
+// Note: json import still needed for marshaling evt.Tags into event.tags column
+
 func (b *SQLite3Backend) SaveEvent(ctx context.Context, evt *nostr.Event) error {
 	// Start a transaction
 	tx, err := b.DB.BeginTxx(ctx, nil)
@@ -46,12 +48,11 @@ func (b *SQLite3Backend) SaveEvent(ctx context.Context, evt *nostr.Event) error 
 		if len(tag) > 1 {
 			firstData = &tag[1]
 		}
-		tagDataJson, _ := json.Marshal(tag)
 
 		_, err = tx.ExecContext(ctx, `
-            INSERT INTO tag (event_id, tag_order, identifier, first_data, tag_data)
-            VALUES ($1, $2, $3, $4, $5)
-        `, evt.ID, i, identifier, firstData, tagDataJson)
+            INSERT INTO tag (event_id, tag_order, identifier, first_data)
+            VALUES ($1, $2, $3, $4)
+        `, evt.ID, i, identifier, firstData)
 		if err != nil {
 			return err
 		}

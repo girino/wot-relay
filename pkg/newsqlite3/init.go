@@ -18,7 +18,7 @@ const (
 	queryAuthorsLimit       = 500
 	queryKindsLimit         = 10
 	queryTagsLimit          = 10
-	currentMigrationVersion = 6
+	currentMigrationVersion = 8
 )
 
 var _ eventstore.Store = (*SQLite3Backend)(nil)
@@ -268,6 +268,26 @@ func (b *SQLite3Backend) runMigrations() error {
 		currentVersion = 6
 	}
 
+	if currentVersion < 7 {
+		if err := b.migration7(); err != nil {
+			return fmt.Errorf("migration 7 failed: %w", err)
+		}
+		if err := b.setVersion(7); err != nil {
+			return err
+		}
+		currentVersion = 7
+	}
+
+	if currentVersion < 8 {
+		if err := b.migration8(); err != nil {
+			return fmt.Errorf("migration 8 failed: %w", err)
+		}
+		if err := b.setVersion(8); err != nil {
+			return err
+		}
+		currentVersion = 8
+	}
+
 	return nil
 }
 
@@ -277,12 +297,12 @@ func (b *SQLite3Backend) migration0() error {
 
 	fmt.Println("  Creating event table...")
 	if _, err := b.DB.Exec(`CREATE TABLE IF NOT EXISTS event (
-		id text NOT NULL,
-		pubkey text NOT NULL,
-		created_at integer NOT NULL,
-		kind integer NOT NULL,
-		tags jsonb NOT NULL,
-		content text NOT NULL,
+			id text NOT NULL,
+			pubkey text NOT NULL,
+			created_at integer NOT NULL,
+			kind integer NOT NULL,
+			tags jsonb NOT NULL,
+			content text NOT NULL,
 		sig text NOT NULL)`); err != nil {
 		return fmt.Errorf("failed to create event table: %w", err)
 	}
@@ -390,12 +410,12 @@ func (b *SQLite3Backend) migration3() error {
 
 	fmt.Println("  Creating tag table...")
 	if _, err := b.DB.Exec(`CREATE TABLE tag (
-		event_id TEXT NOT NULL,
-		tag_order INTEGER NOT NULL,
-		identifier TEXT NOT NULL,
+			event_id TEXT NOT NULL,
+			tag_order INTEGER NOT NULL,
+			identifier TEXT NOT NULL,
 		first_data TEXT,
-		tag_data JSONB NOT NULL,
-		PRIMARY KEY (event_id, tag_order),
+			tag_data JSONB NOT NULL,
+			PRIMARY KEY (event_id, tag_order),
 		FOREIGN KEY (event_id) REFERENCES event(id) ON DELETE CASCADE)`); err != nil {
 		return fmt.Errorf("failed to create tag table: %w", err)
 	}
@@ -564,26 +584,15 @@ func (b *SQLite3Backend) insertTagBatch(tags []tagInsert) error {
 	return nil
 }
 
-// migration4 runs VACUUM and ANALYZE to optimize the database
+// migration4 runs ANALYZE to optimize the database
+// Note: VACUUM removed due to OOM issues on large databases - use manual Vacuum() method
 func (b *SQLite3Backend) migration4() error {
 	fmt.Println("Running migration 4...")
 
-	// Execute ANALYZE before VACUUM to make VACUUM faster
-	fmt.Println("  Running ANALYZE (pre-vacuum) to update statistics...")
+	// Execute ANALYZE to update query planner statistics
+	fmt.Println("  Running ANALYZE to update statistics...")
 	if _, err := b.DB.Exec("ANALYZE"); err != nil {
-		return fmt.Errorf("failed to execute ANALYZE (pre-vacuum): %w", err)
-	}
-
-	// Execute VACUUM to rebuild the database, reclaim unused space, and defragment
-	fmt.Println("  Running VACUUM to rebuild database and reclaim space...")
-	if _, err := b.DB.Exec("VACUUM"); err != nil {
-		return fmt.Errorf("failed to execute VACUUM: %w", err)
-	}
-
-	// Execute ANALYZE after VACUUM to update query planner statistics for the rebuilt indexes
-	fmt.Println("  Running ANALYZE (post-vacuum) to update statistics for rebuilt indexes...")
-	if _, err := b.DB.Exec("ANALYZE"); err != nil {
-		return fmt.Errorf("failed to execute ANALYZE (post-vacuum): %w", err)
+		return fmt.Errorf("failed to execute ANALYZE: %w", err)
 	}
 
 	fmt.Println("Migration 4 complete")
@@ -646,5 +655,118 @@ func (b *SQLite3Backend) migration6() error {
 	}
 
 	fmt.Println("Migration 6 complete")
+	return nil
+}
+
+// migration7 removes the tag_data column from tag table to reduce duplication
+func (b *SQLite3Backend) migration7() error {
+	fmt.Println("Running migration 7...")
+
+	// Disable foreign key constraints during migration
+	fmt.Println("  Temporarily disabling foreign key constraints...")
+	if _, err := b.DB.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+		return fmt.Errorf("failed to disable foreign keys: %w", err)
+	}
+
+	// Drop tag_new if it exists (cleanup from failed attempts)
+	fmt.Println("  Dropping tag_new table if it exists...")
+	if _, err := b.DB.Exec("DROP TABLE IF EXISTS tag_new"); err != nil {
+		return fmt.Errorf("failed to drop tag_new table: %w", err)
+	}
+
+	// Drop all indexes from old tag table before copying (makes copy faster)
+	fmt.Println("  Dropping indexes from old tag table...")
+	oldIndexes := []string{
+		"tag_identifier_idx",
+		"tag_event_id_idx",
+		"tag_identifier_first_data_idx",
+		"tag_first_data_idx",
+		"tag_identifier_first_data_event_idx",
+		"tag_p_first_data_event_idx",
+		"tag_e_first_data_event_idx",
+	}
+	for _, idx := range oldIndexes {
+		fmt.Printf("    Dropping index %s...\n", idx)
+		if _, err := b.DB.Exec(fmt.Sprintf("DROP INDEX IF EXISTS %s", idx)); err != nil {
+			return fmt.Errorf("failed to drop index %s: %w", idx, err)
+		}
+	}
+
+	// Create new tag table without tag_data column
+	fmt.Println("  Creating new tag table without tag_data column...")
+	if _, err := b.DB.Exec(`CREATE TABLE tag_new (
+		event_id TEXT NOT NULL,
+		tag_order INTEGER NOT NULL,
+		identifier TEXT NOT NULL,
+		first_data TEXT,
+		PRIMARY KEY (event_id, tag_order),
+		FOREIGN KEY (event_id) REFERENCES event(id) ON DELETE CASCADE)`); err != nil {
+		return fmt.Errorf("failed to create tag_new table: %w", err)
+	}
+
+	// Copy data from old table to new table (excluding tag_data)
+	fmt.Println("  Copying data from old tag table...")
+	if _, err := b.DB.Exec(`INSERT INTO tag_new (event_id, tag_order, identifier, first_data)
+		SELECT event_id, tag_order, identifier, first_data FROM tag`); err != nil {
+		return fmt.Errorf("failed to copy tag data: %w", err)
+	}
+
+	// Drop old table
+	fmt.Println("  Dropping old tag table...")
+	if _, err := b.DB.Exec("DROP TABLE tag"); err != nil {
+		return fmt.Errorf("failed to drop old tag table: %w", err)
+	}
+
+	// Rename new table to tag
+	fmt.Println("  Renaming tag_new to tag...")
+	if _, err := b.DB.Exec("ALTER TABLE tag_new RENAME TO tag"); err != nil {
+		return fmt.Errorf("failed to rename tag_new: %w", err)
+	}
+
+	// Recreate all indexes
+	fmt.Println("  Recreating indexes...")
+	indexes := []struct {
+		name string
+		sql  string
+	}{
+		{"tag_identifier_idx", "CREATE INDEX tag_identifier_idx ON tag(identifier)"},
+		{"tag_event_id_idx", "CREATE INDEX tag_event_id_idx ON tag(event_id)"},
+		{"tag_identifier_first_data_idx", "CREATE INDEX tag_identifier_first_data_idx ON tag(identifier, first_data)"},
+		{"tag_first_data_idx", "CREATE INDEX tag_first_data_idx ON tag(first_data)"},
+		{"tag_identifier_first_data_event_idx", "CREATE INDEX tag_identifier_first_data_event_idx ON tag(identifier, first_data, event_id)"},
+		{"tag_p_first_data_event_idx", "CREATE INDEX tag_p_first_data_event_idx ON tag(first_data, event_id) WHERE identifier = 'p'"},
+		{"tag_e_first_data_event_idx", "CREATE INDEX tag_e_first_data_event_idx ON tag(first_data, event_id) WHERE identifier = 'e'"},
+	}
+
+	for _, idx := range indexes {
+		fmt.Printf("    Creating index %s...\n", idx.name)
+		if _, err := b.DB.Exec(idx.sql); err != nil {
+			return fmt.Errorf("failed to create index %s: %w", idx.name, err)
+		}
+	}
+
+	// Re-enable foreign key constraints
+	fmt.Println("  Re-enabling foreign key constraints...")
+	if _, err := b.DB.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		return fmt.Errorf("failed to enable foreign keys: %w", err)
+	}
+
+	fmt.Println("Migration 7 complete")
+	return nil
+}
+
+// migration8 runs ANALYZE after removing tag_data column
+// Note: VACUUM removed due to OOM issues - use manual Vacuum() method during off-peak hours
+func (b *SQLite3Backend) migration8() error {
+	fmt.Println("Running migration 8...")
+
+	// Execute ANALYZE to update query planner statistics after schema changes
+	fmt.Println("  Running ANALYZE to update statistics...")
+	if _, err := b.DB.Exec("ANALYZE"); err != nil {
+		return fmt.Errorf("failed to execute ANALYZE: %w", err)
+	}
+
+	fmt.Println("Migration 8 complete")
+	fmt.Println("  Note: VACUUM skipped (OOM prevention). Run manually with backend.Vacuum() to reclaim space.")
 	return nil
 }
