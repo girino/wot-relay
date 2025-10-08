@@ -19,12 +19,10 @@ import (
 	"time"
 
 	"github.com/fiatjaf/eventstore"
-	"github.com/fiatjaf/eventstore/sqlite3"
 	"github.com/fiatjaf/khatru"
 	"github.com/fiatjaf/khatru/policies"
 	"github.com/girino/wot-relay/pkg/logger"
-	"github.com/girino/wot-relay/pkg/profiling"
-	"github.com/girino/wot-relay/pkg/sqlite"
+	"github.com/girino/wot-relay/pkg/newsqlite3"
 	"github.com/joho/godotenv"
 	"github.com/nbd-wtf/go-nostr"
 )
@@ -334,12 +332,11 @@ func main() {
 	relay.Info.Software = "https://github.com/girino/wot-relay"
 	relay.Info.Version = version
 
-	// Create optimized SQLite backend (implements eventstore.Store interface)
-	logger.Info("MAIN", "Creating SQLite backend", map[string]interface{}{"db_path": config.DBPath})
-	sqliteBackend := sqlite.NewOptimizedSQLiteBackend(config.DBPath)
-
-	// Create profiled event store wrapper (adds profiling to the backend)
-	db := profiling.NewProfiledEventStore(sqliteBackend)
+	// Create newsqlite3 backend (implements eventstore.Store interface)
+	logger.Info("MAIN", "Creating newsqlite3 backend", map[string]interface{}{"db_path": config.DBPath})
+	db := &newsqlite3.SQLite3Backend{
+		DatabaseURL: config.DBPath,
+	}
 	if err := db.Init(); err != nil {
 		panic(err)
 	}
@@ -542,7 +539,6 @@ func main() {
 
 		// Get database stats if available
 		var dbStats map[string]interface{}
-		var eventStoreStats map[string]interface{}
 		logger.Info("STATS", "Starting database stats collection", map[string]interface{}{
 			"wdb_nil": wdb == nil,
 		})
@@ -558,49 +554,20 @@ func main() {
 				logger.Info("STATS", "Database store type", map[string]interface{}{
 					"store_type": fmt.Sprintf("%T", db.Store),
 				})
-				if profiledDB, ok := db.Store.(*profiling.ProfiledEventStore); ok {
-					// Get eventstore performance stats
-					perfStats := profiledDB.GetStats()
-					eventStoreStats = map[string]interface{}{
-						// Total time (including semaphore wait time)
-						"save_event_calls":     perfStats.SaveEventCalls,
-						"save_event_avg_ms":    perfStats.SaveEventDuration.Milliseconds() / max(1, perfStats.SaveEventCalls),
-						"query_events_calls":   perfStats.QueryEventsCalls,
-						"query_events_avg_ms":  perfStats.QueryEventsDuration.Milliseconds() / max(1, perfStats.QueryEventsCalls),
-						"delete_event_calls":   perfStats.DeleteEventCalls,
-						"delete_event_avg_ms":  perfStats.DeleteEventDuration.Milliseconds() / max(1, perfStats.DeleteEventCalls),
-						"replace_event_calls":  perfStats.ReplaceEventCalls,
-						"replace_event_avg_ms": perfStats.ReplaceEventDuration.Milliseconds() / max(1, perfStats.ReplaceEventCalls),
-
-						// Pure database time (excluding semaphore wait time)
-						"save_event_db_avg_ms":    perfStats.SaveEventDBDuration.Milliseconds() / max(1, perfStats.SaveEventCalls),
-						"query_events_db_avg_ms":  perfStats.QueryEventsDBDuration.Milliseconds() / max(1, perfStats.QueryEventsCalls),
-						"delete_event_db_avg_ms":  perfStats.DeleteEventDBDuration.Milliseconds() / max(1, perfStats.DeleteEventCalls),
-						"replace_event_db_avg_ms": perfStats.ReplaceEventDBDuration.Milliseconds() / max(1, perfStats.ReplaceEventCalls),
-
-						// Semaphore usage
-						"write_semaphore_used": len(profiledDB.WriteSemaphore),
-						"write_semaphore_cap":  cap(profiledDB.WriteSemaphore),
-						"read_semaphore_used":  len(profiledDB.ReadSemaphore),
-						"read_semaphore_cap":   cap(profiledDB.ReadSemaphore),
+				// Get SQLite connection stats
+				if sqliteDB, ok := db.Store.(*newsqlite3.SQLite3Backend); ok {
+					stats := sqliteDB.Stats()
+					dbStats = map[string]interface{}{
+						"open_connections": stats.OpenConnections,
+						"in_use":           stats.InUse,
+						"idle":             stats.Idle,
+						"wait_count":       stats.WaitCount,
 					}
-					logger.Info("STATS", "Profiled database stats found", map[string]interface{}{
-						"save_calls":   perfStats.SaveEventCalls,
-						"query_calls":  perfStats.QueryEventsCalls,
-						"delete_calls": perfStats.DeleteEventCalls,
+					logger.Info("STATS", "Database stats collected", map[string]interface{}{
+						"open_connections": stats.OpenConnections,
 					})
-					// Also get SQLite connection stats
-					if sqliteDB, ok := profiledDB.GetBackend().(*sqlite3.SQLite3Backend); ok {
-						stats := sqliteDB.Stats()
-						dbStats = map[string]interface{}{
-							"open_connections": stats.OpenConnections,
-							"in_use":           stats.InUse,
-							"idle":             stats.Idle,
-							"wait_count":       stats.WaitCount,
-						}
-					}
 				} else {
-					logger.Info("STATS", "Type assertion failed - not ProfiledEventStore", map[string]interface{}{
+					logger.Info("STATS", "Type assertion failed - not newsqlite3.SQLite3Backend", map[string]interface{}{
 						"actual_type": fmt.Sprintf("%T", db.Store),
 					})
 				}
@@ -661,10 +628,6 @@ func main() {
 
 		if dbStats != nil {
 			stats["database"] = dbStats
-		}
-
-		if eventStoreStats != nil {
-			stats["eventstore"] = eventStoreStats
 		}
 
 		json.NewEncoder(w).Encode(stats)
@@ -749,20 +712,14 @@ func monitorResources() {
 			// Database performance monitoring
 			if wdb != nil {
 				if db, ok := wdb.(eventstore.RelayWrapper); ok {
-					if profiledDB, ok := db.Store.(*profiling.ProfiledEventStore); ok {
-						// Log eventstore performance stats
-						profiledDB.LogStats(logger.GetDefault())
-
-						// Also get SQLite connection stats
-						if sqliteDB, ok := profiledDB.GetBackend().(*sqlite3.SQLite3Backend); ok {
-							stats := sqliteDB.Stats()
-							logger.Info("MONITOR", "Database connections", map[string]interface{}{
-								"open_connections": stats.OpenConnections,
-								"in_use":           stats.InUse,
-								"idle":             stats.Idle,
-								"wait_count":       stats.WaitCount,
-							})
-						}
+					if sqliteDB, ok := db.Store.(*newsqlite3.SQLite3Backend); ok {
+						stats := sqliteDB.Stats()
+						logger.Info("MONITOR", "Database connections", map[string]interface{}{
+							"open_connections": stats.OpenConnections,
+							"in_use":           stats.InUse,
+							"idle":             stats.Idle,
+							"wait_count":       stats.WaitCount,
+						})
 					}
 				}
 			}
@@ -1178,15 +1135,6 @@ func refreshTrustNetwork(ctx context.Context, relay *khatru.Relay) {
 			"next_refresh_hours":     config.RefreshInterval,
 			"cycle_duration_minutes": cycleDuration.Minutes(),
 		})
-
-		// Reset performance stats for clean metrics in next cycle
-		if wdb != nil {
-			if db, ok := wdb.(eventstore.RelayWrapper); ok {
-				if profiledDB, ok := db.Store.(*profiling.ProfiledEventStore); ok {
-					profiledDB.ResetStats()
-				}
-			}
-		}
 
 		// Wait for the configured refresh interval before next cycle
 		time.Sleep(time.Duration(config.RefreshInterval) * time.Hour)

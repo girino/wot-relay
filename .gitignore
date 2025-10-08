@@ -5,6 +5,9 @@ wot-relay
 .history/*
 wot-relay.exe
 
+# Log files
+*.log
+
 # Docker Compose files
 docker-compose.yml
 docker-compose.*.yml
