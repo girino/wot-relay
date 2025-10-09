@@ -571,6 +571,16 @@ func main() {
 							"idle":             connStats.Idle,
 							"wait_count":       connStats.WaitCount,
 						},
+						"semaphores": map[string]interface{}{
+							"write_semaphore": map[string]interface{}{
+								"used":     len(profiledDB.WriteSemaphore),
+								"capacity": cap(profiledDB.WriteSemaphore),
+							},
+							"read_semaphore": map[string]interface{}{
+								"used":     len(profiledDB.ReadSemaphore),
+								"capacity": cap(profiledDB.ReadSemaphore),
+							},
+						},
 						"operations": map[string]interface{}{
 							"save_event": map[string]interface{}{
 								"calls":      profStats.SaveEventCalls,
