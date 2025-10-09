@@ -197,10 +197,12 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 		case p.ReadSemaphore <- struct{}{}:
 			// Got semaphore, proceed with query
 		case <-ctx.Done():
-			logger.Error("PROFILING", "QueryEvents context canceled before semaphore", map[string]interface{}{"error": ctx.Err(), "filter": filter})
+			// Client disconnected while waiting for semaphore - this is normal
+			logger.Debug("PROFILING", "QueryEvents context canceled before semaphore", map[string]interface{}{"error": ctx.Err(), "filter": filter})
 			return
 		case <-timeoutCtx.Done():
-			logger.Error("PROFILING", "QueryEvents timeout", map[string]interface{}{"error": timeoutCtx.Err(), "filter": filter})
+			// Timeout waiting for semaphore - this might indicate congestion
+			logger.Warn("PROFILING", "QueryEvents timeout waiting for semaphore", map[string]interface{}{"error": timeoutCtx.Err(), "filter": filter})
 			return
 		}
 
@@ -218,7 +220,14 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 		// Get the backend channel
 		ch, err := p.Store.QueryEvents(timeoutCtx, filter)
 		if err != nil {
-			logger.Error("PROFILING", "QueryEvents backend error", map[string]interface{}{"error": err, "filter": filter})
+			// Check if this is a context cancellation (client disconnect)
+			if ctx.Err() != nil {
+				// Original context was canceled (client disconnect) - this is normal, just debug
+				logger.Debug("PROFILING", "QueryEvents canceled by client", map[string]interface{}{"error": err, "filter": filter})
+			} else {
+				// Actual database error
+				logger.Error("PROFILING", "QueryEvents backend error", map[string]interface{}{"error": err, "filter": filter})
+			}
 			return
 		}
 
@@ -244,10 +253,12 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 
 				wrappedCh <- evt
 			case <-timeoutCtx.Done():
-				logger.Error("PROFILING", "QueryEvents timeout while reading events", map[string]interface{}{"error": timeoutCtx.Err(), "filter": filter})
+				// Timeout while reading events - log as warning
+				logger.Warn("PROFILING", "QueryEvents timeout while reading events", map[string]interface{}{"error": timeoutCtx.Err(), "filter": filter, "events_read": eventCount})
 				break loop
 			case <-ctx.Done():
-				logger.Error("PROFILING", "QueryEvents context canceled while reading events", map[string]interface{}{"error": ctx.Err(), "filter": filter})
+				// Client disconnected while reading events - this is normal
+				logger.Debug("PROFILING", "QueryEvents context canceled while reading events", map[string]interface{}{"error": ctx.Err(), "filter": filter, "events_read": eventCount})
 				break loop
 			}
 		}

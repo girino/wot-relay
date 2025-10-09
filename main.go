@@ -142,29 +142,36 @@ func (m *Metrics) GetMetrics() Metrics {
 }
 
 type Config struct {
-	RelayName            string
-	RelayPubkey          string
-	RelayDescription     string
-	DBPath               string
-	RelayURL             string
-	IndexPath            string
-	StaticPath           string
-	RefreshInterval      int
-	MinimumFollowers     int
-	ArchivalSync         bool
-	RelayContact         string
-	RelayIcon            string
-	MaxAgeDays           int
-	ArchiveReactions     bool
-	ArchiveMaxDays       int
-	IgnoredPubkeys       []string
-	WoTDepth             int
-	EnableKind1984Filter bool
+	RelayName                string
+	RelayPubkey              string
+	RelayDescription         string
+	DBPath                   string
+	RelayURL                 string
+	IndexPath                string
+	StaticPath               string
+	RefreshInterval          int
+	MinimumFollowers         int
+	ArchivalSync             bool
+	RelayContact             string
+	RelayIcon                string
+	MaxAgeDays               int
+	ArchiveReactions         bool
+	ArchiveMaxDays           int
+	IgnoredPubkeys           []string
+	WoTDepth                 int
+	EnableKind1984Filter     bool
+	EnableAntiSyncBotsFilter bool
+	EnableProfiling          bool
+	QueryIDsLimit            int
+	QueryAuthorsLimit        int
+	QueryKindsLimit          int
+	QueryTagsLimit           int
 }
 
 // Remove persistent pool - we'll create connections on-demand
 var wdb nostr.RelayStore
 var profiledDB *profiling.ProfiledEventStore
+var eventStore eventstore.Store // The actual store being used (profiled or unprofiled)
 var config Config
 
 // createTemporaryPool creates a temporary pool for a specific operation
@@ -348,17 +355,34 @@ func main() {
 	logger.Info("MAIN", "Creating newsqlite3 backend", map[string]interface{}{"db_path": config.DBPath})
 	unprofiledDb := &newsqlite3.SQLite3Backend{
 		DatabaseURL:        config.DBPath,
-		SlowQueryThreshold: -1, // Disable slow query logging
+		SlowQueryThreshold: -1,                       // Disable slow query logging
+		QueryIDsLimit:      config.QueryIDsLimit,     // Configurable via QUERY_IDS_LIMIT
+		QueryAuthorsLimit:  config.QueryAuthorsLimit, // Configurable via QUERY_AUTHORS_LIMIT
+		QueryKindsLimit:    config.QueryKindsLimit,   // Configurable via QUERY_KINDS_LIMIT
+		QueryTagsLimit:     config.QueryTagsLimit,    // Configurable via QUERY_TAGS_LIMIT
 	}
+	logger.Info("MAIN", "Database query limits configured", map[string]interface{}{
+		"ids_limit":     unprofiledDb.QueryIDsLimit,
+		"authors_limit": unprofiledDb.QueryAuthorsLimit,
+		"kinds_limit":   unprofiledDb.QueryKindsLimit,
+		"tags_limit":    unprofiledDb.QueryTagsLimit,
+	})
 	if err := unprofiledDb.Init(); err != nil {
 		panic(err)
 	}
 
-	// Wrap with profiling for stats collection
-	logger.Info("MAIN", "Wrapping database with profiling layer")
-	profiledDB = profiling.NewProfiledEventStore(unprofiledDb)
-
-	wdb = eventstore.RelayWrapper{Store: profiledDB}
+	// Conditionally wrap with profiling layer based on config
+	if config.EnableProfiling {
+		logger.Info("MAIN", "Profiling layer enabled")
+		profiledDB = profiling.NewProfiledEventStore(unprofiledDb)
+		eventStore = profiledDB
+		wdb = eventstore.RelayWrapper{Store: profiledDB}
+	} else {
+		logger.Info("MAIN", "Profiling layer disabled - using direct database access")
+		profiledDB = nil
+		eventStore = unprofiledDb
+		wdb = eventstore.RelayWrapper{Store: unprofiledDb}
+	}
 
 	relay.RejectEvent = append(relay.RejectEvent,
 		policies.RejectEventsWithBase64Media,
@@ -411,29 +435,37 @@ func main() {
 		logger.Info("CONFIG", "Kind 1984 filters disabled")
 	}
 
-	relay.RejectFilter = append(relay.RejectFilter,
-		// Only allows for authed bots
-		func(ctx context.Context, filter nostr.Filter) (reject bool, msg string) {
-			r, _ := policies.AntiSyncBots(ctx, filter)
-			if r {
-				r, _ = policies.MustAuth(ctx, filter)
+	// Optional anti-sync bots filter (controlled by ENABLE_ANTI_SYNC_BOTS_FILTER env var)
+	if config.EnableAntiSyncBotsFilter {
+		logger.Info("CONFIG", "Anti-sync bots filter enabled")
+		relay.RejectFilter = append(relay.RejectFilter,
+			func(ctx context.Context, filter nostr.Filter) (reject bool, msg string) {
+				r, _ := policies.AntiSyncBots(ctx, filter)
 				if r {
-					return r, "auth-required: kind 1 scraping requires authentication"
+					r, _ = policies.MustAuth(ctx, filter)
+					if r {
+						return r, "auth-required: kind 1 scraping requires authentication"
+					}
+
+					trustNetworkMutex.RLock()
+					pubkey := khatru.GetAuthed(ctx)
+					trusted := trustNetworkMap[pubkey]
+					trustNetworkMutex.RUnlock()
+
+					if !trusted {
+						return true, pubkey + " not in web of trust"
+					}
+
+					return false, ""
 				}
-
-				trustNetworkMutex.RLock()
-				pubkey := khatru.GetAuthed(ctx)
-				trusted := trustNetworkMap[pubkey]
-				trustNetworkMutex.RUnlock()
-
-				if !trusted {
-					return true, pubkey + " not in web of trust"
-				}
-
 				return false, ""
-			}
-			return false, ""
-		},
+			},
+		)
+	} else {
+		logger.Info("CONFIG", "Anti-sync bots filter disabled")
+	}
+
+	relay.RejectFilter = append(relay.RejectFilter,
 		policies.NoSearchQueries,
 		policies.FilterIPRateLimiter(20, time.Minute, 100),
 	)
@@ -442,10 +474,10 @@ func main() {
 		policies.ConnectionRateLimiter(10, time.Minute*2, 30),
 	)
 
-	relay.StoreEvent = append(relay.StoreEvent, profiledDB.SaveEvent)
-	relay.QueryEvents = append(relay.QueryEvents, profiledDB.QueryEvents)
-	relay.DeleteEvent = append(relay.DeleteEvent, profiledDB.DeleteEvent)
-	relay.ReplaceEvent = append(relay.ReplaceEvent, profiledDB.ReplaceEvent)
+	relay.StoreEvent = append(relay.StoreEvent, eventStore.SaveEvent)
+	relay.QueryEvents = append(relay.QueryEvents, eventStore.QueryEvents)
+	relay.DeleteEvent = append(relay.DeleteEvent, eventStore.DeleteEvent)
+	relay.ReplaceEvent = append(relay.ReplaceEvent, eventStore.ReplaceEvent)
 	relay.RejectEvent = append(relay.RejectEvent, func(ctx context.Context, event *nostr.Event) (bool, string) {
 		// Don't reject events if we haven't booted yet or if trust network is empty
 		trustNetworkMutex.RLock()
@@ -600,7 +632,7 @@ func main() {
 		// Get database stats if available
 		var dbStats map[string]interface{}
 		if profiledDB != nil {
-			// Get underlying newsqlite3 backend for connection stats
+			// Profiling enabled - show profiling stats
 			if backend := profiledDB.GetBackend(); backend != nil {
 				if sqliteDB, ok := backend.(*newsqlite3.SQLite3Backend); ok {
 					connStats := sqliteDB.Stats()
@@ -609,6 +641,7 @@ func main() {
 					profStats := profiledDB.GetStats()
 
 					dbStats = map[string]interface{}{
+						"profiling_enabled": true,
 						"connections": map[string]interface{}{
 							"open_connections": connStats.OpenConnections,
 							"in_use":           connStats.InUse,
@@ -656,6 +689,21 @@ func main() {
 							},
 						},
 					}
+				}
+			}
+		} else if eventStore != nil {
+			// Profiling disabled - show basic connection stats only
+			if sqliteDB, ok := eventStore.(*newsqlite3.SQLite3Backend); ok {
+				connStats := sqliteDB.Stats()
+
+				dbStats = map[string]interface{}{
+					"profiling_enabled": false,
+					"connections": map[string]interface{}{
+						"open_connections": connStats.OpenConnections,
+						"in_use":           connStats.InUse,
+						"idle":             connStats.Idle,
+						"wait_count":       connStats.WaitCount,
+					},
 				}
 			}
 		}
@@ -883,33 +931,65 @@ func LoadConfig() Config {
 		os.Setenv("LOG_LEVEL", "INFO")
 	}
 
+	if os.Getenv("QUERY_IDS_LIMIT") == "" {
+		os.Setenv("QUERY_IDS_LIMIT", "50")
+	}
+
+	if os.Getenv("QUERY_AUTHORS_LIMIT") == "" {
+		os.Setenv("QUERY_AUTHORS_LIMIT", "50")
+	}
+
+	if os.Getenv("QUERY_KINDS_LIMIT") == "" {
+		os.Setenv("QUERY_KINDS_LIMIT", "50")
+	}
+
+	if os.Getenv("QUERY_TAGS_LIMIT") == "" {
+		os.Setenv("QUERY_TAGS_LIMIT", "50")
+	}
+
 	minimumFollowers, _ := strconv.Atoi(os.Getenv("MINIMUM_FOLLOWERS"))
 	maxAgeDays, _ := strconv.Atoi(os.Getenv("MAX_AGE_DAYS"))
 	archiveMaxDays, _ := strconv.Atoi(os.Getenv("ARCHIVE_MAX_DAYS"))
 	woTDepth, _ := strconv.Atoi(os.Getenv("WOT_DEPTH"))
+	queryIDsLimit, _ := strconv.Atoi(os.Getenv("QUERY_IDS_LIMIT"))
+	queryAuthorsLimit, _ := strconv.Atoi(os.Getenv("QUERY_AUTHORS_LIMIT"))
+	queryKindsLimit, _ := strconv.Atoi(os.Getenv("QUERY_KINDS_LIMIT"))
+	queryTagsLimit, _ := strconv.Atoi(os.Getenv("QUERY_TAGS_LIMIT"))
 
 	// Optional: ENABLE_KIND1984_FILTER defaults to disabled if not set
 	enableKind1984Filter := os.Getenv("ENABLE_KIND1984_FILTER") == "TRUE"
 
+	// Optional: ENABLE_ANTI_SYNC_BOTS_FILTER defaults to disabled if not set
+	enableAntiSyncBotsFilter := os.Getenv("ENABLE_ANTI_SYNC_BOTS_FILTER") == "TRUE"
+
+	// Optional: ENABLE_PROFILING defaults to disabled if not set
+	enableProfiling := os.Getenv("ENABLE_PROFILING") == "TRUE"
+
 	config := Config{
-		RelayName:            getEnv("RELAY_NAME"),
-		RelayPubkey:          getEnv("RELAY_PUBKEY"),
-		RelayDescription:     getEnv("RELAY_DESCRIPTION"),
-		RelayContact:         getEnv("RELAY_CONTACT"),
-		RelayIcon:            getEnv("RELAY_ICON"),
-		DBPath:               getEnv("DB_PATH"),
-		RelayURL:             getEnv("RELAY_URL"),
-		IndexPath:            getEnv("INDEX_PATH"),
-		StaticPath:           getEnv("STATIC_PATH"),
-		RefreshInterval:      refreshInterval,
-		MinimumFollowers:     minimumFollowers,
-		ArchivalSync:         getEnv("ARCHIVAL_SYNC") == "TRUE",
-		MaxAgeDays:           maxAgeDays,
-		ArchiveReactions:     getEnv("ARCHIVE_REACTIONS") == "TRUE",
-		ArchiveMaxDays:       archiveMaxDays,
-		IgnoredPubkeys:       ignoredPubkeys,
-		WoTDepth:             woTDepth,
-		EnableKind1984Filter: enableKind1984Filter,
+		RelayName:                getEnv("RELAY_NAME"),
+		RelayPubkey:              getEnv("RELAY_PUBKEY"),
+		RelayDescription:         getEnv("RELAY_DESCRIPTION"),
+		RelayContact:             getEnv("RELAY_CONTACT"),
+		RelayIcon:                getEnv("RELAY_ICON"),
+		DBPath:                   getEnv("DB_PATH"),
+		RelayURL:                 getEnv("RELAY_URL"),
+		IndexPath:                getEnv("INDEX_PATH"),
+		StaticPath:               getEnv("STATIC_PATH"),
+		RefreshInterval:          refreshInterval,
+		MinimumFollowers:         minimumFollowers,
+		ArchivalSync:             getEnv("ARCHIVAL_SYNC") == "TRUE",
+		MaxAgeDays:               maxAgeDays,
+		ArchiveReactions:         getEnv("ARCHIVE_REACTIONS") == "TRUE",
+		ArchiveMaxDays:           archiveMaxDays,
+		IgnoredPubkeys:           ignoredPubkeys,
+		WoTDepth:                 woTDepth,
+		EnableKind1984Filter:     enableKind1984Filter,
+		EnableAntiSyncBotsFilter: enableAntiSyncBotsFilter,
+		EnableProfiling:          enableProfiling,
+		QueryIDsLimit:            queryIDsLimit,
+		QueryAuthorsLimit:        queryAuthorsLimit,
+		QueryKindsLimit:          queryKindsLimit,
+		QueryTagsLimit:           queryTagsLimit,
 	}
 
 	return config
