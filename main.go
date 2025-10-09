@@ -370,6 +370,14 @@ func main() {
 		policies.NoEmptyFilters,
 		policies.NoComplexFilters,
 		func(ctx context.Context, filter nostr.Filter) (reject bool, msg string) {
+			if len(filter.Kinds) > 0 && slices.Contains(filter.Kinds, 1984) {
+				if len(filter.Authors) > 0 && len(filter.Tags) > 0 {
+					return true, "kind 1984 cannot have both tag and author filters"
+				}
+			}
+			return false, ""
+		},
+		func(ctx context.Context, filter nostr.Filter) (reject bool, msg string) {
 			// Require authentication for kind 1984
 			if len(filter.Kinds) > 0 && slices.Contains(filter.Kinds, 1984) {
 				r, _ := policies.MustAuth(ctx, filter)
