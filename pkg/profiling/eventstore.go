@@ -65,7 +65,7 @@ type ProfiledEventStore struct {
 
 	// Concurrency control using semaphores
 	WriteSemaphore chan struct{} // Serialized writes (1 slot)
-	ReadSemaphore  chan struct{} // Concurrent reads (6 slots)
+	ReadSemaphore  chan struct{} // Concurrent reads (1024 slots)
 }
 
 // NewProfiledEventStore creates a new ProfiledEventStore with semaphore-based concurrency
@@ -73,8 +73,8 @@ func NewProfiledEventStore(backend eventstore.Store) *ProfiledEventStore {
 	return &ProfiledEventStore{
 		Store:          backend,
 		stats:          &EventStoreStats{},
-		WriteSemaphore: make(chan struct{}, 1),  // Serialized writes (1 slot)
-		ReadSemaphore:  make(chan struct{}, 32), // Concurrent reads (32 slots)
+		WriteSemaphore: make(chan struct{}, 1),    // Serialized writes (1 slot)
+		ReadSemaphore:  make(chan struct{}, 1024), // Concurrent reads (1024 slots)
 	}
 }
 
@@ -168,7 +168,23 @@ func (p *ProfiledEventStore) QueryEvents(ctx context.Context, filter nostr.Filte
 	// Create the wrapper channel
 	wrappedCh := make(chan *nostr.Event)
 
-	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, 30*time.Second)
+	//timeoutCtx, timeoutCancel := context.WithTimeout(ctx, 30*time.Second)
+	var timeoutCtx context.Context
+	var timeoutCancel context.CancelFunc
+
+	deadline, hasDeadline := ctx.Deadline()
+	if hasDeadline {
+		remaining := time.Until(deadline)
+		if remaining < 30*time.Second {
+			logger.Warn("PROFILING", "QueryEvents context has deadline but it's less than 30 seconds", map[string]interface{}{"remaining": remaining})
+			timeoutCtx, timeoutCancel = context.WithCancel(ctx)
+		} else {
+			timeoutCtx, timeoutCancel = context.WithTimeout(ctx, 30*time.Second)
+		}
+	} else {
+		timeoutCtx, timeoutCancel = context.WithTimeout(ctx, 30*time.Second)
+	}
+
 	go func() {
 		defer close(wrappedCh)
 		defer timeoutCancel()
