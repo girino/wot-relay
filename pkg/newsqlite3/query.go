@@ -245,8 +245,16 @@ func (b *SQLite3Backend) queryEventsSql(filter nostr.Filter, doCount bool) (stri
 
 	// Build the FROM clause with joins
 	fromClause := "event"
+
+	// Add index hint for queries with authors, kinds, and tags (force better query plan)
+	// This prevents SQLite from starting with tag table scan
+	if len(joins) > 0 && len(filter.Authors) > 0 && len(filter.Kinds) > 0 {
+		// Force use of covering index for pubkey+kind+time
+		fromClause = "event INDEXED BY event_pubkey_kind_time_id_idx"
+	}
+
 	if len(joins) > 0 {
-		fromClause = "event " + strings.Join(joins, " ")
+		fromClause = fromClause + " " + strings.Join(joins, " ")
 	}
 
 	var query string

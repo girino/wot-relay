@@ -142,23 +142,24 @@ func (m *Metrics) GetMetrics() Metrics {
 }
 
 type Config struct {
-	RelayName        string
-	RelayPubkey      string
-	RelayDescription string
-	DBPath           string
-	RelayURL         string
-	IndexPath        string
-	StaticPath       string
-	RefreshInterval  int
-	MinimumFollowers int
-	ArchivalSync     bool
-	RelayContact     string
-	RelayIcon        string
-	MaxAgeDays       int
-	ArchiveReactions bool
-	ArchiveMaxDays   int
-	IgnoredPubkeys   []string
-	WoTDepth         int
+	RelayName            string
+	RelayPubkey          string
+	RelayDescription     string
+	DBPath               string
+	RelayURL             string
+	IndexPath            string
+	StaticPath           string
+	RefreshInterval      int
+	MinimumFollowers     int
+	ArchivalSync         bool
+	RelayContact         string
+	RelayIcon            string
+	MaxAgeDays           int
+	ArchiveReactions     bool
+	ArchiveMaxDays       int
+	IgnoredPubkeys       []string
+	WoTDepth             int
+	EnableKind1984Filter bool
 }
 
 // Remove persistent pool - we'll create connections on-demand
@@ -369,34 +370,48 @@ func main() {
 	relay.RejectFilter = append(relay.RejectFilter,
 		policies.NoEmptyFilters,
 		policies.NoComplexFilters,
-		func(ctx context.Context, filter nostr.Filter) (reject bool, msg string) {
-			if len(filter.Kinds) > 0 && slices.Contains(filter.Kinds, 1984) {
-				if len(filter.Authors) > 0 && len(filter.Tags) > 0 {
-					return true, "kind 1984 cannot have both tag and author filters"
-				}
-			}
-			return false, ""
-		},
-		func(ctx context.Context, filter nostr.Filter) (reject bool, msg string) {
-			// Require authentication for kind 1984
-			if len(filter.Kinds) > 0 && slices.Contains(filter.Kinds, 1984) {
-				r, _ := policies.MustAuth(ctx, filter)
-				if r {
-					return true, "auth-required: kind 1984 requires authentication"
-				}
+	)
 
-				// Check if the authed pubkey is in the web of trust
-				trustNetworkMutex.RLock()
-				pubkey := khatru.GetAuthed(ctx)
-				trusted := trustNetworkMap[pubkey]
-				trustNetworkMutex.RUnlock()
-
-				if !trusted {
-					return true, pubkey + " not in web of trust"
+	// Optional kind 1984 filters (controlled by ENABLE_KIND1984_FILTER env var)
+	if config.EnableKind1984Filter {
+		logger.Info("CONFIG", "Kind 1984 filters enabled")
+		relay.RejectFilter = append(relay.RejectFilter,
+			func(ctx context.Context, filter nostr.Filter) (reject bool, msg string) {
+				if len(filter.Kinds) > 0 && slices.Contains(filter.Kinds, 1984) {
+					if len(filter.Authors) > 0 && len(filter.Tags) > 0 {
+						ip := khatru.GetIP(ctx)
+						logger.Info("FILTER", "kind 1984 cannot have both tag and author filters", map[string]interface{}{"ip": ip})
+						return true, "kind 1984 cannot have both tag and author filters"
+					}
 				}
-			}
-			return false, ""
-		},
+				return false, ""
+			},
+			func(ctx context.Context, filter nostr.Filter) (reject bool, msg string) {
+				// Require authentication for kind 1984
+				if len(filter.Kinds) > 0 && slices.Contains(filter.Kinds, 1984) {
+					r, _ := policies.MustAuth(ctx, filter)
+					if r {
+						return true, "auth-required: kind 1984 requires authentication"
+					}
+
+					// Check if the authed pubkey is in the web of trust
+					trustNetworkMutex.RLock()
+					pubkey := khatru.GetAuthed(ctx)
+					trusted := trustNetworkMap[pubkey]
+					trustNetworkMutex.RUnlock()
+
+					if !trusted {
+						return true, pubkey + " not in web of trust"
+					}
+				}
+				return false, ""
+			},
+		)
+	} else {
+		logger.Info("CONFIG", "Kind 1984 filters disabled")
+	}
+
+	relay.RejectFilter = append(relay.RejectFilter,
 		// Only allows for authed bots
 		func(ctx context.Context, filter nostr.Filter) (reject bool, msg string) {
 			r, _ := policies.AntiSyncBots(ctx, filter)
@@ -873,24 +888,28 @@ func LoadConfig() Config {
 	archiveMaxDays, _ := strconv.Atoi(os.Getenv("ARCHIVE_MAX_DAYS"))
 	woTDepth, _ := strconv.Atoi(os.Getenv("WOT_DEPTH"))
 
+	// Optional: ENABLE_KIND1984_FILTER defaults to disabled if not set
+	enableKind1984Filter := os.Getenv("ENABLE_KIND1984_FILTER") == "TRUE"
+
 	config := Config{
-		RelayName:        getEnv("RELAY_NAME"),
-		RelayPubkey:      getEnv("RELAY_PUBKEY"),
-		RelayDescription: getEnv("RELAY_DESCRIPTION"),
-		RelayContact:     getEnv("RELAY_CONTACT"),
-		RelayIcon:        getEnv("RELAY_ICON"),
-		DBPath:           getEnv("DB_PATH"),
-		RelayURL:         getEnv("RELAY_URL"),
-		IndexPath:        getEnv("INDEX_PATH"),
-		StaticPath:       getEnv("STATIC_PATH"),
-		RefreshInterval:  refreshInterval,
-		MinimumFollowers: minimumFollowers,
-		ArchivalSync:     getEnv("ARCHIVAL_SYNC") == "TRUE",
-		MaxAgeDays:       maxAgeDays,
-		ArchiveReactions: getEnv("ARCHIVE_REACTIONS") == "TRUE",
-		ArchiveMaxDays:   archiveMaxDays,
-		IgnoredPubkeys:   ignoredPubkeys,
-		WoTDepth:         woTDepth,
+		RelayName:            getEnv("RELAY_NAME"),
+		RelayPubkey:          getEnv("RELAY_PUBKEY"),
+		RelayDescription:     getEnv("RELAY_DESCRIPTION"),
+		RelayContact:         getEnv("RELAY_CONTACT"),
+		RelayIcon:            getEnv("RELAY_ICON"),
+		DBPath:               getEnv("DB_PATH"),
+		RelayURL:             getEnv("RELAY_URL"),
+		IndexPath:            getEnv("INDEX_PATH"),
+		StaticPath:           getEnv("STATIC_PATH"),
+		RefreshInterval:      refreshInterval,
+		MinimumFollowers:     minimumFollowers,
+		ArchivalSync:         getEnv("ARCHIVAL_SYNC") == "TRUE",
+		MaxAgeDays:           maxAgeDays,
+		ArchiveReactions:     getEnv("ARCHIVE_REACTIONS") == "TRUE",
+		ArchiveMaxDays:       archiveMaxDays,
+		IgnoredPubkeys:       ignoredPubkeys,
+		WoTDepth:             woTDepth,
+		EnableKind1984Filter: enableKind1984Filter,
 	}
 
 	return config

@@ -59,12 +59,27 @@ func (l *Logger) Log(level LogLevel, component, message string, fields ...map[st
 
 	var fieldStr string
 	if len(fields) > 0 {
-		if jsonBytes, err := json.Marshal(fields[0]); err == nil {
+		// Convert error objects to strings for proper JSON serialization
+		processedFields := normalizeFields(fields[0])
+		if jsonBytes, err := json.Marshal(processedFields); err == nil {
 			fieldStr = " " + string(jsonBytes)
 		}
 	}
 
 	log.Printf("[%s] %s [%s] %s%s", timestamp, levelName, component, message, fieldStr)
+}
+
+// normalizeFields converts error objects to strings for proper JSON serialization
+func normalizeFields(fields map[string]interface{}) map[string]interface{} {
+	normalized := make(map[string]interface{}, len(fields))
+	for key, value := range fields {
+		if err, ok := value.(error); ok {
+			normalized[key] = err.Error()
+		} else {
+			normalized[key] = value
+		}
+	}
+	return normalized
 }
 
 // Debug logs a debug message
