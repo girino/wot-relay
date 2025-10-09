@@ -18,7 +18,7 @@ const (
 	queryAuthorsLimit       = 500
 	queryKindsLimit         = 10
 	queryTagsLimit          = 10
-	currentMigrationVersion = 8
+	currentMigrationVersion = 9
 )
 
 var _ eventstore.Store = (*SQLite3Backend)(nil)
@@ -286,6 +286,16 @@ func (b *SQLite3Backend) runMigrations() error {
 			return err
 		}
 		currentVersion = 8
+	}
+
+	if currentVersion < 9 {
+		if err := b.migration9(); err != nil {
+			return fmt.Errorf("migration 9 failed: %w", err)
+		}
+		if err := b.setVersion(9); err != nil {
+			return err
+		}
+		currentVersion = 9
 	}
 
 	return nil
@@ -768,5 +778,36 @@ func (b *SQLite3Backend) migration8() error {
 
 	fmt.Println("Migration 8 complete")
 	fmt.Println("  Note: VACUUM skipped (OOM prevention). Run manually with backend.Vacuum() to reclaim space.")
+	return nil
+}
+
+// migration9 adds optimized indexes for kind 1984 (reports) queries
+// These queries are particularly slow when filtering by many authors and tag JOINs
+func (b *SQLite3Backend) migration9() error {
+	fmt.Println("Running migration 9...")
+
+	// Partial index for kind 1984 with pubkey and time
+	// Optimizes: SELECT ... WHERE kind=1984 AND pubkey IN (...) AND created_at >= ?
+	fmt.Println("  Creating partial index for kind 1984 queries...")
+	if _, err := b.DB.Exec(`CREATE INDEX IF NOT EXISTS event_kind1984_pubkey_time_idx 
+		ON event(pubkey, created_at DESC, id) WHERE kind = 1984`); err != nil {
+		return fmt.Errorf("failed to create event_kind1984_pubkey_time_idx: %w", err)
+	}
+
+	// Composite covering index for common multi-kind queries with time ordering
+	// Covers the full SELECT without table lookups when possible
+	fmt.Println("  Creating covering index for pubkey+kind+time queries...")
+	if _, err := b.DB.Exec(`CREATE INDEX IF NOT EXISTS event_pubkey_kind_time_id_idx 
+		ON event(pubkey, kind, created_at DESC, id)`); err != nil {
+		return fmt.Errorf("failed to create event_pubkey_kind_time_id_idx: %w", err)
+	}
+
+	// Update statistics to help query planner use the new indexes
+	fmt.Println("  Running ANALYZE to update query planner statistics...")
+	if _, err := b.DB.Exec("ANALYZE"); err != nil {
+		return fmt.Errorf("failed to execute ANALYZE: %w", err)
+	}
+
+	fmt.Println("Migration 9 complete")
 	return nil
 }
