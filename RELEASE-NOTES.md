@@ -57,9 +57,7 @@ wot-relay/
 ├── env.example               # Environment configuration template
 ├── nginx.conf                # Nginx reverse proxy configuration
 ├── deploy.sh                 # Automated deployment script
-├── patches/                  # Library patches
-│   └── eventstore-querykindslimit.patch
-└── README-PRODUCTION.md      # Production deployment guide
+└── README.md                 # Comprehensive documentation
 ```
 
 ### 🔄 Migration from v1.1.0
@@ -71,10 +69,10 @@ wot-relay/
 
 ### 🐛 Bug Fixes
 
-- **Eventstore Patch**: Fixed "too many kinds" errors with proper library patching
 - **Graceful Shutdown**: Resolved hanging during shutdown with proper context management
 - **Channel Management**: Fixed race conditions in event processing
 - **Memory Leaks**: Improved memory management and garbage collection
+- **Query Limits**: Custom SQLite backend handles configurable query limits
 
 ### 📈 Performance Metrics
 
