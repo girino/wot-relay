@@ -1,6 +1,6 @@
-# v1.5.0-rc1 - Documentation & Performance Release
+# v1.5.0 - Documentation & Performance Release
 
-**Release Candidate** for version 1.5.0 - Major refactoring focused on documentation, performance, and code organization.
+**Stable Release** - Major refactoring focused on documentation, performance, and code organization.
 
 ## 🎯 Highlights
 
@@ -106,5 +106,5 @@ See [RELEASE_NOTES_v1.5.0.md](RELEASE_NOTES_v1.5.0.md) for complete changelog an
 - Source code (zip)
 - Source code (tar.gz)
 
-**Full Changelog**: https://github.com/bitvora/wot-relay/compare/v1.4.0...v1.5.0-rc1
+**Full Changelog**: https://github.com/bitvora/wot-relay/compare/v1.4.0...v1.5.0
 

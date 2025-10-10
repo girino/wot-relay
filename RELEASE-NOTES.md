@@ -1,6 +1,6 @@
 # Release Notes
 
-## v1.5.0-rc1 (2025-10-09)
+## v1.5.0 (2025-10-09)
 
 ### 🎉 Overview
 
@@ -49,6 +49,86 @@ Major refactoring release focused on documentation, performance, and code organi
 - **Updated**: Main README with complete guide
 
 **Full Details**: See [RELEASE_NOTES_v1.5.0.md](RELEASE_NOTES_v1.5.0.md)
+
+---
+
+## v1.4.0 (2025-XX-XX)
+
+### 🔧 Major Changes
+
+- **Structured Logger Package**: Normalized all logging to use structured logger package
+- **Improved Error Logging**: Enhanced error logging in QueryEvents with context cancellation capture
+- **Attribution Update**: Updated footer to reflect girino as builder, loosely based on Bitvora
+
+### 🐛 Bug Fixes
+
+- Better context error handling in query events
+- Improved error context capture and logging
+
+### 📝 Logging Improvements
+
+- Consistent structured logging across all components
+- Better error context and debugging information
+- Normalized log format throughout codebase
+
+---
+
+## v1.3.0 (2025-XX-XX)
+
+### 🚀 Major Features
+
+- **Package Reorganization**: Moved packages from `internal/` to `pkg/` for external importability
+- **Profiling Package**: Separated profiling into distinct package with performance monitoring
+- **SQLite Optimizations**: Dedicated package for SQLite performance optimizations
+- **Semaphore-Based Concurrency**: Hybrid eventstore with concurrent reads and serialized writes
+
+### 🔧 Performance Improvements
+
+- **Comprehensive Database Indexes**: Added optimized indexes for common query patterns
+- **Dual Timing Metrics**: Track both total time and pure database time
+- **Automatic Stats Cleanup**: Clean up stats at end of refresh cycles
+- **On-Demand Relay Connections**: Better connection management
+- **Worker Pool Enhancements**: 
+  - Default to 2 workers per CPU core
+  - Configurable worker count and multiplier
+  - Added worker statistics to stats endpoint
+
+### 🐛 Bug Fixes
+
+- Fixed context cancellation errors and improved performance
+- Fixed filter validation to clean empty tag arrays instead of rejecting
+- Fixed type assertion for RelayWrapper in stats endpoint
+- Fixed relay to use profiled database correctly
+- Better error handling for empty tag sets
+
+### 📦 Configuration
+
+- **Configurable Seed Relays**: `SEED_RELAYS` environment variable
+- **Worker Configuration**: Configurable via `WORKER_COUNT` and `WORKER_MULTIPLIER`
+- **Profile Max Age**: Removed unused `PROFILE_MAX_AGE_DAYS` configuration
+
+### 🔄 Refactoring
+
+- Separated profiling and SQLite optimizations into distinct packages
+- Removed unused relay connection semaphore
+- Removed unused BatchProcessor code
+- Cleaner eventstore implementation with channel-based operation queue
+- Better separation of concerns across packages
+
+### 📊 Monitoring
+
+- Comprehensive debug logging for stats endpoint
+- Worker statistics tracking
+- Progress logging for profile refresh
+- Detailed filter logging for QueryEvents errors
+
+### 🐳 Docker & Deployment
+
+- Updated Docker files to use `example.env` instead of `env.example`
+- Tor now part of default production deployment
+- Removed Prometheus and Grafana from production compose (simplified)
+- Fixed volume mounts and Go version in Docker configs
+- Added eventstore patch to Docker builds
 
 ---
 

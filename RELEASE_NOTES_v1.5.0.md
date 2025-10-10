@@ -1,7 +1,7 @@
-# Release Notes - v1.5.0-rc1
+# Release Notes - v1.5.0
 
 **Release Date:** October 9, 2025  
-**Release Type:** Pre-release / Release Candidate  
+**Release Type:** Stable Release  
 **Previous Version:** v1.4.0
 
 ## 🎉 Overview
@@ -197,7 +197,7 @@ MAX_RELAYS=1000                # REMOVED
 
 ## 🚀 Upgrade Guide
 
-### From v1.4.0 to v1.5.0-rc1
+### From v1.4.0 to v1.5.0
 
 #### Step 1: Update Configuration
 Remove unused variables from `.env`:
@@ -311,13 +311,7 @@ This release represents a significant cleanup and documentation effort to make t
 
 ## 🐛 Known Issues
 
-None at this time. This is a release candidate - please report any issues!
-
-## 📅 Next Steps
-
-- Monitor performance in production
-- Gather feedback on new features
-- Plan for v1.5.0 stable release
+None at this time. Please report any issues!
 
 ## 🔗 Links
 
@@ -327,5 +321,5 @@ None at this time. This is a release candidate - please report any issues!
 
 ---
 
-**Full Changelog**: https://github.com/bitvora/wot-relay/compare/v1.4.0...v1.5.0-rc1
+**Full Changelog**: https://github.com/bitvora/wot-relay/compare/v1.4.0...v1.5.0
 
