@@ -104,14 +104,14 @@ if err != nil {
 Logs are output in the following format:
 
 ```
-[TIMESTAMP] LEVEL [COMPONENT] MESSAGE {JSON_FIELDS}
+TIMESTAMP LEVEL [COMPONENT] MESSAGE {JSON_FIELDS}
 ```
 
 Example:
 ```
-[2024/01/15 10:30:45] INFO [MAIN] Application started
-[2024/01/15 10:30:46] ERROR [DATABASE] Connection failed {"error":"connection refused","retry_count":3}
-[2024/01/15 10:30:50] WARN [WOT] Network size limit reached {"size":40000,"limit":40000}
+2024/01/15 10:30:45 INFO [MAIN] Application started
+2024/01/15 10:30:46 ERROR [DATABASE] Connection failed {"error":"connection refused","retry_count":3}
+2024/01/15 10:30:50 WARN [WOT] Network size limit reached {"size":40000,"limit":40000}
 ```
 
 ## Configuration

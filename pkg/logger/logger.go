@@ -3,7 +3,6 @@ package logger
 import (
 	"encoding/json"
 	"log"
-	"time"
 )
 
 // LogLevel represents the logging level
@@ -54,7 +53,6 @@ func (l *Logger) Log(level LogLevel, component, message string, fields ...map[st
 		ERROR: "ERROR",
 	}
 
-	timestamp := time.Now().Format("2006/01/02 15:04:05")
 	levelName := levelNames[level]
 
 	var fieldStr string
@@ -66,7 +64,7 @@ func (l *Logger) Log(level LogLevel, component, message string, fields ...map[st
 		}
 	}
 
-	log.Printf("[%s] %s [%s] %s%s", timestamp, levelName, component, message, fieldStr)
+	log.Printf("%s [%s] %s%s", levelName, component, message, fieldStr)
 }
 
 // normalizeFields converts error objects to strings for proper JSON serialization
