@@ -902,18 +902,6 @@ func LoadConfig() Config {
 		os.Setenv("ARCHIVE_REACTIONS", "FALSE")
 	}
 
-	if os.Getenv("MAX_TRUST_NETWORK") == "" {
-		os.Setenv("MAX_TRUST_NETWORK", "40000")
-	}
-
-	if os.Getenv("MAX_RELAYS") == "" {
-		os.Setenv("MAX_RELAYS", "1000")
-	}
-
-	if os.Getenv("MAX_ONE_HOP_NETWORK") == "" {
-		os.Setenv("MAX_ONE_HOP_NETWORK", "50000")
-	}
-
 	ignoredPubkeys := []string{}
 	if ignoreList := os.Getenv("IGNORE_FOLLOWS_LIST"); ignoreList != "" {
 		ignoredPubkeys = splitAndTrim(ignoreList)
