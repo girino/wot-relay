@@ -8,7 +8,11 @@ Major refactoring release focused on documentation, performance, and code organi
 
 ### ⚠️ Breaking Changes
 
-- **Package Renamed**: `pkg/newsqlite3` → `pkg/sqlite3`
+- **SQLite Backend Rewritten**: Complete rewrite of SQLite backend (`pkg/newsqlite3` → `pkg/sqlite3`)
+  - New normalized tag table (eliminates JSON parsing)
+  - Rewritten queries avoiding LIKE operations
+  - 9 database migrations for schema evolution
+  - Significantly improved query performance
 - **Removed Unused Variables**: `MAX_TRUST_NETWORK`, `MAX_ONE_HOP_NETWORK`, `MAX_RELAYS`
 
 ### ✨ Major Features
@@ -26,8 +30,12 @@ Major refactoring release focused on documentation, performance, and code organi
 
 ### 🔄 Refactoring
 
-- Renamed `pkg/newsqlite3` to `pkg/sqlite3`
-- Removed eventstore patches (no longer needed)
+- **Complete SQLite Backend Rewrite**: `pkg/sqlite3` with normalized schema
+  - New tag table eliminates JSON parsing in queries
+  - All queries rewritten to avoid LIKE operations
+  - Direct column access for better performance
+  - 9-stage migration system for schema evolution
+- Removed eventstore patches (no longer needed with custom backend)
 - Deleted 9 redundant documentation files
 - Cleaned up Go dependencies
 - Removed unused `pkg/sqlite/` package

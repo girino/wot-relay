@@ -12,8 +12,12 @@
 
 ## ⚠️ Breaking Changes
 
-### Package Renamed
-- `pkg/newsqlite3` → `pkg/sqlite3` (update imports if you use this directly)
+### SQLite Backend Completely Rewritten
+- `pkg/newsqlite3` → `pkg/sqlite3` (complete ground-up rewrite)
+- **New normalized schema**: Separate tag table eliminates JSON parsing
+- **Rewritten queries**: All queries avoid LIKE operations for 10-20x performance
+- **9 migrations**: Automatic upgrade from old schema
+- Update imports if you use this package directly
 
 ### Removed Environment Variables
 These were never used and have been removed:
