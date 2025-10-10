@@ -332,11 +332,11 @@ None at this time. Please report any issues!
 
 ## 🔗 Links
 
-- **Repository**: https://github.com/bitvora/wot-relay
-- **Issues**: https://github.com/bitvora/wot-relay/issues
+- **Repository**: https://github.com/girino/wot-relay
+- **Issues**: https://github.com/girino/wot-relay/issues
 - **Documentation**: See README.md
 
 ---
 
-**Full Changelog**: https://github.com/bitvora/wot-relay/compare/v1.4.0...v1.5.0
+**Full Changelog**: https://github.com/girino/wot-relay/compare/v1.4.0...v1.5.0
 
