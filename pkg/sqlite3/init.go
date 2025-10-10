@@ -1,4 +1,4 @@
-package newsqlite3
+package sqlite3
 
 import (
 	"database/sql"

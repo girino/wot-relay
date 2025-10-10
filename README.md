@@ -551,7 +551,7 @@ go build -ldflags "-X main.version=$(git describe --tags --always)"
 ### Components
 
 - **Main Relay**: Nostr protocol implementation using Khatru framework
-- **Database**: SQLite with custom indexes and optimizations (see `pkg/newsqlite3/`)
+- **Database**: SQLite with custom indexes and optimizations (see `pkg/sqlite3/`)
 - **Profiling Layer**: Optional performance monitoring (see `pkg/profiling/`)
 - **Logger**: Structured logging system (see `pkg/logger/`)
 - **Worker Pool**: Multi-threaded event processing
@@ -569,7 +569,7 @@ go build -ldflags "-X main.version=$(git describe --tags --always)"
 
 For detailed documentation on internal packages:
 - [pkg/logger/](pkg/logger/README.md) - Structured logging
-- [pkg/newsqlite3/](pkg/newsqlite3/README.md) - SQLite backend wrapper
+- [pkg/sqlite3/](pkg/sqlite3/README.md) - SQLite backend wrapper
 - [pkg/profiling/](pkg/profiling/README.md) - Performance profiling
 
 ## API Endpoints

@@ -588,5 +588,5 @@ ENABLE_PROFILING=TRUE
 
 - [Main README](../../README.md) - General relay documentation
 - [pkg/logger](../logger/README.md) - Logging system used by profiling
-- [pkg/newsqlite3](../newsqlite3/README.md) - SQLite backend that gets profiled
+- [pkg/sqlite3](../sqlite3/README.md) - SQLite backend that gets profiled
 

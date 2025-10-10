@@ -382,5 +382,5 @@ The logger is thread-safe and can be used concurrently from multiple goroutines.
 
 - [Main README](../../README.md) - General relay documentation
 - [pkg/profiling](../profiling/README.md) - Performance profiling that uses this logger
-- [pkg/newsqlite3](../newsqlite3/README.md) - SQLite backend that uses this logger
+- [pkg/sqlite3](../sqlite3/README.md) - SQLite backend that uses this logger
 

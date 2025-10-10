@@ -1,4 +1,4 @@
-# newsqlite3 Package
+# sqlite3 Package
 
 A high-performance SQLite3 backend for Nostr event storage with optimized indexes, query planning, and maintenance capabilities. This package wraps the `github.com/fiatjaf/eventstore` interface with additional optimizations.
 
@@ -136,11 +136,11 @@ QUERY_TAGS_LIMIT=50                # Max tag values in filter
 
 ```go
 import (
-    "github.com/girino/wot-relay/pkg/newsqlite3"
+    "github.com/girino/wot-relay/pkg/sqlite3"
 )
 
 // Create backend
-backend := &newsqlite3.SQLite3Backend{
+backend := &sqlite3.SQLite3Backend{
     DatabaseURL:       "relay.db?_journal_mode=WAL&_synchronous=NORMAL",
     QueryLimit:        100,
     QueryIDsLimit:     50,
@@ -159,7 +159,7 @@ defer backend.Close()
 ### With Periodic Maintenance
 
 ```go
-backend := &newsqlite3.SQLite3Backend{
+backend := &sqlite3.SQLite3Backend{
     DatabaseURL:         "relay.db",
     MaintenanceInterval: 24 * time.Hour, // Run ANALYZE daily
 }
@@ -503,7 +503,7 @@ Migrations are atomic. If one fails:
 
 ### Run Query Tests
 ```bash
-cd pkg/newsqlite3
+cd pkg/sqlite3
 go test -v
 ```
 

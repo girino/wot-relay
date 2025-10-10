@@ -23,8 +23,8 @@ import (
 	"github.com/fiatjaf/khatru"
 	"github.com/fiatjaf/khatru/policies"
 	"github.com/girino/wot-relay/pkg/logger"
-	"github.com/girino/wot-relay/pkg/newsqlite3"
 	"github.com/girino/wot-relay/pkg/profiling"
+	"github.com/girino/wot-relay/pkg/sqlite3"
 	"github.com/joho/godotenv"
 	"github.com/nbd-wtf/go-nostr"
 )
@@ -351,9 +351,9 @@ func main() {
 	relay.Info.Software = "https://github.com/girino/wot-relay"
 	relay.Info.Version = version
 
-	// Create newsqlite3 backend (implements eventstore.Store interface)
-	logger.Info("MAIN", "Creating newsqlite3 backend", map[string]interface{}{"db_path": config.DBPath})
-	unprofiledDb := &newsqlite3.SQLite3Backend{
+	// Create sqlite3 backend (implements eventstore.Store interface)
+	logger.Info("MAIN", "Creating sqlite3 backend", map[string]interface{}{"db_path": config.DBPath})
+	unprofiledDb := &sqlite3.SQLite3Backend{
 		DatabaseURL:        config.DBPath,
 		SlowQueryThreshold: -1,                       // Disable slow query logging
 		QueryIDsLimit:      config.QueryIDsLimit,     // Configurable via QUERY_IDS_LIMIT
@@ -634,7 +634,7 @@ func main() {
 		if profiledDB != nil {
 			// Profiling enabled - show profiling stats
 			if backend := profiledDB.GetBackend(); backend != nil {
-				if sqliteDB, ok := backend.(*newsqlite3.SQLite3Backend); ok {
+				if sqliteDB, ok := backend.(*sqlite3.SQLite3Backend); ok {
 					connStats := sqliteDB.Stats()
 
 					// Get profiling stats
@@ -693,7 +693,7 @@ func main() {
 			}
 		} else if eventStore != nil {
 			// Profiling disabled - show basic connection stats only
-			if sqliteDB, ok := eventStore.(*newsqlite3.SQLite3Backend); ok {
+			if sqliteDB, ok := eventStore.(*sqlite3.SQLite3Backend); ok {
 				connStats := sqliteDB.Stats()
 
 				dbStats = map[string]interface{}{
@@ -830,7 +830,7 @@ func monitorResources() {
 			// Database performance monitoring
 			if profiledDB != nil {
 				if backend := profiledDB.GetBackend(); backend != nil {
-					if sqliteDB, ok := backend.(*newsqlite3.SQLite3Backend); ok {
+					if sqliteDB, ok := backend.(*sqlite3.SQLite3Backend); ok {
 						connStats := sqliteDB.Stats()
 						profStats := profiledDB.GetStats()
 
