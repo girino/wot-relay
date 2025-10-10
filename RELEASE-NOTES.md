@@ -1,5 +1,57 @@
 # Release Notes
 
+## v1.5.0-rc1 (2025-10-09)
+
+### 🎉 Overview
+
+Major refactoring release focused on documentation, performance, and code organization. Complete documentation overhaul with 2,170+ lines of new content, significant query performance improvements (10-20x faster for kind 1984), and cleaner package architecture.
+
+### ⚠️ Breaking Changes
+
+- **Package Renamed**: `pkg/newsqlite3` → `pkg/sqlite3`
+- **Removed Unused Variables**: `MAX_TRUST_NETWORK`, `MAX_ONE_HOP_NETWORK`, `MAX_RELAYS`
+
+### ✨ Major Features
+
+- **📚 Documentation Overhaul**: Unified README (654 lines) + comprehensive package docs (1,516 lines)
+- **🚀 Query Performance**: Migration 9 with specialized indexes for kind 1984 (10-20x faster)
+- **⚙️ Configurable Limits**: `QUERY_IDS_LIMIT`, `QUERY_AUTHORS_LIMIT`, `QUERY_KINDS_LIMIT`, `QUERY_TAGS_LIMIT`
+- **🎛️ Optional Filters**: Anti-sync bots, Kind 1984 filtering, and profiling (all opt-in)
+
+### 🐛 Bug Fixes
+
+- Fixed duplicate timestamps in logger output
+- Optimized slow kind 1984 queries (200-1200ms → 10-100ms)
+- Improved query plan selection with index hints
+
+### 🔄 Refactoring
+
+- Renamed `pkg/newsqlite3` to `pkg/sqlite3`
+- Removed eventstore patches (no longer needed)
+- Deleted 9 redundant documentation files
+- Cleaned up Go dependencies
+- Removed unused `pkg/sqlite/` package
+
+### 📈 Performance Improvements
+
+- Increased read semaphore from 6 to 32 (5x concurrent reads)
+- Doubled cache size (64MB → 128MB)
+- Doubled mmap size (256MB → 512MB)
+- Removed tag_data column (reduced database size)
+- Added covering and partial indexes
+
+### 📦 Documentation
+
+- **Added**: `pkg/logger/README.md` (387 lines)
+- **Added**: `pkg/sqlite3/README.md` (536 lines)
+- **Added**: `pkg/profiling/README.md` (593 lines)
+- **Deleted**: 9 redundant config/analysis docs
+- **Updated**: Main README with complete guide
+
+**Full Details**: See [RELEASE_NOTES_v1.5.0.md](RELEASE_NOTES_v1.5.0.md)
+
+---
+
 ## v1.2.0-production (2024-01-XX)
 
 ### 🚀 Major Features
